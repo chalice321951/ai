@@ -1,0 +1,163 @@
+{
+  "algorithm": {
+    "mode": "tracking_only",
+    "inference_engine_type": "optimized"
+  },
+  "inference": {
+    "device": "gpu"
+  },
+  "stream": {
+    "pull_device": "cpu",
+    "push_device": "cpu"
+  },
+  "tracking": {
+    "persist": true,
+    "tracker": "bytetrack.yaml",
+    "conf_threshold": 0.3
+  },
+  "models": {
+    "default_conf_threshold": 0.7,
+    "model_mappings": {
+      "detection": {
+        "3001": "/home/lenovo/AI/models/jixie-all-0110.pt"
+      }
+    }
+  },
+  "streams": [
+    {
+      "name": "罗家集",
+      "input_url": "rtsp://admin:Aa001002@@223.83.128.221:554/chnid=1",
+      "output_url": "rtmp://223.84.144.55:31890/ai/camera-1002",
+      "enabled": true,
+      "taskId": "罗家集",
+      "gatewayDeviceSn": "罗家集",
+      "droneDeviceSn": "罗家集",
+      "monitorEq": "罗家集",
+      "area": "罗家集",
+      "rootName": "罗家集",
+      "alarmAccuratePosition": "115.989370,28.633754"
+    },
+    {
+      "name": "商储大厦",
+      "input_url": "rtsp://admin:Aa001002@@183.216.49.235:554/chnid=1",
+      "output_url": "rtmp://223.84.144.55:31890/ai/camera-1004",
+      "enabled": true,
+      "taskId": "商储大厦",
+      "gatewayDeviceSn": "商储大厦",
+      "droneDeviceSn": "商储大厦",
+      "monitorEq": "商储大厦",
+      "area": "商储大厦",
+      "rootName": "商储大厦",
+      "alarmAccuratePosition": "115.915493,28.664027"
+    },
+    {
+      "name": "世贸广场",
+      "input_url": "rtsp://admin:Aa001002@@223.84.57.8:554/chnid=1",
+      "output_url": "rtmp://223.84.144.55:31890/ai/camera-1006",
+      "enabled": true,
+      "taskId": "世贸广场",
+      "gatewayDeviceSn": "世贸广场",
+      "droneDeviceSn": "世贸广场",
+      "monitorEq": "世贸广场",
+      "area": "世贸广场",
+      "rootName": "世贸广场",
+      "alarmAccuratePosition": "115.867216,28.692784"
+    },
+    {
+      "name": "岗下江南郡",
+      "input_url": "rtsp://admin:Aa001002@@223.83.128.219:554/chnid=1",
+      "output_url": "rtmp://223.84.144.55:31890/ai/camera-1008",
+      "enabled": true,
+      "taskId": "岗下江南郡",
+      "gatewayDeviceSn": "岗下江南郡",
+      "droneDeviceSn": "岗下江南郡",
+      "monitorEq": "岗下江南郡",
+      "area": "岗下江南郡",
+      "rootName": "岗下江南郡",
+      "alarmAccuratePosition": "115.986700,28.620900"
+    },
+    {
+      "name": "中央香榭",
+      "input_url": "rtsp://admin:Aa001002@@223.83.133.38:554/chnid=1",
+      "output_url": "rtmp://223.84.144.55:31890/ai/camera-1010",
+      "enabled": true,
+      "taskId": "中央香榭",
+      "gatewayDeviceSn": "中央香榭",
+      "droneDeviceSn": "中央香榭",
+      "monitorEq": "中央香榭",
+      "area": "中央香榭",
+      "rootName": "中央香榭",
+      "alarmAccuratePosition": "115.8355,28.6589"
+    },
+    {
+      "name": "国动塔",
+      "input_url": "rtsp://admin:Aa001002@@223.83.147.78:554/chnid=1",
+      "output_url": "rtmp://223.84.144.55:31890/ai/camera-1012",
+      "enabled": true,
+      "taskId": "国动塔",
+      "gatewayDeviceSn": "国动塔",
+      "droneDeviceSn": "国动塔",
+      "monitorEq": "国动塔",
+      "area": "国动塔",
+      "rootName": "国动塔",
+      "alarmAccuratePosition": "115.8340623,28.6808033"
+    }
+  ],
+  "classes": {
+    "filtered_classes": {
+      "detection_filtered_classes_by_id": {}
+    }
+  },
+  "performance": {
+    "detection_inference_interval": 1,
+    "result_max_back_frames": 30
+  },
+  "alarm": {
+    "target_threshold": 1,
+    "interval_seconds": 10,
+    "video_clip_seconds": 10,
+    "video_buffer_seconds": 12,
+    "video_pre_alert_seconds": 5,
+    "video_post_alert_seconds": 5
+  },
+  "application": {
+    "output_directory": "./res",
+    "error_retry_interval": 5.0
+  },
+  "video": {
+    "auto_detect_resolution": true,
+    "target_width": 1920,
+    "target_height": 1080,
+    "default_width": 1920,
+    "default_height": 1080,
+    "fps": 25,
+    "push_fps": 25,
+    "bitrate": "4M",
+    "max_bitrate": "6M",
+    "buffer_size": "8M",
+    "gop_size": 50,
+    "push_enabled": true,
+    "push_codec": "auto",
+    "encoding_preset": "p4"
+  },
+  "minio": {
+    "endpoint": "223.84.144.55:31887",
+    "access_key": "admin",
+    "secret_key": "admin123",
+    "secure": false,
+    "bucket_name": "prod-ai-media"
+  },
+  "platform_api": {
+    "base_url": "http://223.84.144.55:31888",
+    "username": "admin",
+    "password": "crscu@!@#",
+    "captcha": "e1a709144444b0800585121bb9272318",
+    "checkKey": "e352eaa3205126f521c027784ce82baf",
+    "vendor_id": 0,
+    "device_type": 1,
+    "task_type": 1,
+    "report_enabled": true,
+    "login_timeout": 10.0,
+    "report_timeout": 10.0
+  }
+}
