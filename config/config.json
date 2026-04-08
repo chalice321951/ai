@@ -8,7 +8,7 @@
   },
   "stream": {
     "pull_device": "cpu",
-    "push_device": "cpu"
+    "push_device": "gpu"
   },
   "tracking": {
     "persist": true,

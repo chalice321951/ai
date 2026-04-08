@@ -35,6 +35,7 @@ from stream.enhanced_video_processor import (
     VideoStreamConfig,
     VideoStreamStatus,
 )
+from stream.capture_process import CaptureProxy
 from inference.inference_engine import InferenceEngine
 from inference.inference_process import InferenceProxy
 from alert.alert_system import AlertSystem, create_count_threshold_rule, AlertLevel
@@ -88,7 +89,8 @@ class StreamProcessor:
         self._push_ffmpeg_resolution: Optional[tuple] = None
         self._push_reset_needed = False
 
-        self.video_processor: Optional[EnhancedVideoStreamProcessor] = None
+        self.video_processor = None
+        self.capture_proxy: Optional[CaptureProxy] = None
 
         self._frame_id = 0
         self._last_infer_frame_id = -1
@@ -114,6 +116,40 @@ class StreamProcessor:
         )
         self.alert_system.add_rule(rule)
 
+    def _build_capture_options(self) -> str:
+        """构建 FFmpeg 拉流参数，和 EnhancedVideoStreamProcessor 一致"""
+        from urllib.parse import urlparse
+        scheme = (urlparse(self.input_url).scheme or '').lower()
+        options = []
+        if scheme == 'rtsp':
+            options.extend([
+                'rtsp_transport;tcp',
+                'reorder_queue_size;1024',
+                'buffer_size;2097152',
+                'max_delay;1000000',
+                'stimeout;10000000',
+            ])
+        pull_device = getattr(self.config, 'pull_device', 'cpu')
+        if pull_device == 'gpu':
+            options.extend([
+                'hwaccel;cuda',
+                'hwaccel_output_format;cuda',
+            ])
+        return '|'.join(options)
+
+    def _on_capture_status(self, stream_id: str, status: str):
+        """拉流子进程状态回调"""
+        status_map = {
+            'connecting': VideoStreamStatus.CONNECTING,
+            'connected': VideoStreamStatus.CONNECTED,
+            'interrupted': VideoStreamStatus.INTERRUPTED,
+            'reconnecting': VideoStreamStatus.RECONNECTING,
+            'error': VideoStreamStatus.ERROR,
+        }
+        vs = status_map.get(status)
+        if vs:
+            self._on_status_change(stream_id, vs)
+
     def start(self):
         self.is_running = True
         self._stop_event.clear()
@@ -129,30 +165,18 @@ class StreamProcessor:
         if self.output_url:
             self._open_ffmpeg(self.output_url)
 
-        w, h = self._detected_resolution
-        stream_config = VideoStreamConfig(
+        capture_options = self._build_capture_options()
+        logging.info(f"[{self.name}] 拉流参数: {capture_options}")
+
+        self.capture_proxy = CaptureProxy(
+            stream_id=f"{self.name}_{int(time.time())}",
             stream_url=self.input_url,
-            target_width=w,
-            target_height=h,
-            expected_fps=self.config.fps,
             pull_device=getattr(self.config, 'pull_device', 'cpu'),
-            connection_timeout=10.0,
-            read_timeout=5.0,
-            frame_timeout=10.0,
-            stream_timeout=30.0,
-            min_fps_threshold=10.0,
-            auto_reconnect=True,
-            max_reconnect_attempts=0,
-            reconnect_delay=5.0,
-            frame_queue_size=3,
-            drop_frames_on_full=True,
+            capture_options=capture_options,
+            frame_callback=self._on_frame,
+            status_callback=self._on_capture_status,
         )
-        stream_id = f"{self.name}_{int(time.time())}"
-        self.video_processor = EnhancedVideoStreamProcessor(stream_id, stream_config)
-        self.video_processor.add_frame_callback(self._on_frame)
-        self.video_processor.add_status_callback(self._on_status_change)
-        self.video_processor.add_error_callback(self._on_error)
-        self.video_processor.start()
+        self.capture_proxy.start()
 
         push_thread = threading.Thread(target=self._push_loop, daemon=True, name=f"Push-{self.name}")
         push_thread.start()
@@ -163,6 +187,10 @@ class StreamProcessor:
         logging.info(f"[{self.name}] 停止中...")
         self.is_running = False
         self._stop_event.set()
+
+        if self.capture_proxy:
+            self.capture_proxy.stop()
+            self.capture_proxy = None
 
         if self.video_processor:
             self.video_processor.stop()

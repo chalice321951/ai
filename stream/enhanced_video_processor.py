@@ -16,6 +16,10 @@ from enum import Enum
 
 from .stream_health_monitor import StreamHealthMonitor, StreamHealthConfig, StreamHealthStatus
 
+# 全局锁：保护 OPENCV_FFMPEG_CAPTURE_OPTIONS 环境变量设置 + VideoCapture 初始化
+# 多路流并发打开时，环境变量是全局的，必须串行设置+打开，避免互相覆盖导致 native 崩溃
+_capture_open_lock = threading.Lock()
+
 
 class VideoStreamStatus(Enum):
     IDLE = "idle"
@@ -103,14 +107,17 @@ class EnhancedVideoStreamProcessor:
 
     def _open_capture(self):
         options = self._build_capture_options()
-        os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = options
         os.environ.setdefault('OPENCV_LOG_LEVEL', 'ERROR')
         os.environ.setdefault('OPENCV_FFMPEG_LOGLEVEL', '0')
         logging.info(f"[{self.stream_id}] FFmpeg拉流参数: {options}")
-        with self._suppress_capture_backend_logs():
-            if hasattr(cv2, 'CAP_FFMPEG'):
-                return cv2.VideoCapture(self.config.stream_url, cv2.CAP_FFMPEG)
-            return cv2.VideoCapture(self.config.stream_url)
+        with _capture_open_lock:
+            os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = options
+            with self._suppress_capture_backend_logs():
+                if hasattr(cv2, 'CAP_FFMPEG'):
+                    cap = cv2.VideoCapture(self.config.stream_url, cv2.CAP_FFMPEG)
+                else:
+                    cap = cv2.VideoCapture(self.config.stream_url)
+        return cap
 
     def __init__(self, stream_id: str, config: VideoStreamConfig):
         self.stream_id = stream_id
@@ -267,7 +274,8 @@ class EnhancedVideoStreamProcessor:
         if not self.cap or not self.cap.isOpened():
             return False
         try:
-            ret, frame = self.cap.read()
+            with _capture_open_lock:
+                ret, frame = self.cap.read()
             if ret and frame is not None and getattr(frame, 'size', 0) > 0 and self.stats['frames_read'] == 0:
                 logging.info(f"[{self.stream_id}] capture_stage=read_ok_first shape={getattr(frame, 'shape', None)} dtype={getattr(frame, 'dtype', None)}")
             if not ret or frame is None or frame.size == 0:
@@ -336,7 +344,8 @@ class EnhancedVideoStreamProcessor:
     def _close_capture(self):
         if self.cap:
             try:
-                self.cap.release()
+                with _capture_open_lock:
+                    self.cap.release()
             except Exception:
                 pass
             self.cap = None
