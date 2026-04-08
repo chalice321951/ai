@@ -802,4 +802,17 @@ def _kill_child_processes():
 if __name__ == '__main__':
     multiprocessing.set_start_method('forkserver', force=True)
     atexit.register(_kill_child_processes)
+
+    # 段错误时 atexit 不会触发，用 SIGSEGV 信号处理兜底清理子进程
+    def _sigsegv_handler(signum, frame):
+        _kill_child_processes()
+        # 恢复默认处理，让进程正常 core dump
+        signal.signal(signal.SIGSEGV, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGSEGV)
+
+    try:
+        signal.signal(signal.SIGSEGV, _sigsegv_handler)
+    except Exception:
+        pass
+
     sys.exit(main())
