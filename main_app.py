@@ -5,6 +5,7 @@ AI摄像头流检测主程序
 支持多路RTSP/RTMP流并发检测、AI推理、告警、FFmpeg推送AI结果流
 """
 
+import atexit
 import faulthandler
 import logging
 import multiprocessing
@@ -91,7 +92,7 @@ class StreamProcessor:
 
         self._frame_id = 0
         self._last_infer_frame_id = -1
-        self._crash_trace_enabled = bool(getattr(self.config, 'crash_trace_enabled', True))
+        self._crash_trace_enabled = bool(getattr(self.config, 'crash_trace_enabled', False))
         self._last_detection_overlays = []
         self._last_tracking_summary = {
             'track_count': 0,
@@ -776,6 +777,28 @@ def main():
     return 0
 
 
+def _kill_child_processes():
+    """主进程退出时强制清理所有子进程，防止孤儿进程残留"""
+    try:
+        import psutil
+        current = psutil.Process(os.getpid())
+        children = current.children(recursive=True)
+        for child in children:
+            try:
+                child.kill()
+            except Exception:
+                pass
+    except ImportError:
+        # psutil 不可用时用 os.killpg 兜底
+        try:
+            os.killpg(os.getpgid(os.getpid()), signal.SIGKILL)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 if __name__ == '__main__':
     multiprocessing.set_start_method('forkserver', force=True)
+    atexit.register(_kill_child_processes)
     sys.exit(main())
