@@ -253,12 +253,14 @@ class InferenceProxy:
 
         ctx = multiprocessing.get_context('forkserver')
 
-        # 创建两对 Pipe：主进程写请求，子进程读；子进程写结果，主进程读
-        req_parent, req_child = ctx.Pipe(duplex=False)  # 主进程写，子进程读
-        res_child, res_parent = ctx.Pipe(duplex=False)  # 子进程写，主进程读
+        # duplex=False: Pipe() 返回 (read_end, write_end)
+        # 请求管道：主进程写 → 子进程读
+        req_child_read, req_parent_write = ctx.Pipe(duplex=False)
+        # 结果管道：子进程写 → 主进程读
+        res_parent_read, res_child_write = ctx.Pipe(duplex=False)
 
-        self._req_conn = req_parent  # 主进程写端
-        self._res_conn = res_parent  # 主进程读端
+        self._req_conn = req_parent_write  # 主进程写端
+        self._res_conn = res_parent_read   # 主进程读端
 
         self._process = ctx.Process(
             target=_worker_main,
@@ -266,8 +268,8 @@ class InferenceProxy:
                 self._stream_name,
                 model_defs,
                 tracking_cfg,
-                req_child,
-                res_child,
+                req_child_read,
+                res_child_write,
                 os.getpid(),
             ),
             daemon=True,
@@ -276,8 +278,8 @@ class InferenceProxy:
         self._process.start()
 
         # 子进程启动后关闭主进程不需要的端
-        req_child.close()
-        res_child.close()
+        req_child_read.close()
+        res_child_write.close()
 
         logging.info(f"[{self._stream_name}] 推理子进程已启动 pid={self._process.pid}")
 
