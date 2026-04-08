@@ -280,9 +280,10 @@ class StreamProcessor:
                 pass
 
             if self.alert_system.alert_handler:
-                self.alert_system.alert_handler.collect_clip_frame(rendered_frame)
+                alert_frame = rendered_frame.copy()
+                self.alert_system.alert_handler.collect_clip_frame(alert_frame)
                 if detection_dict:
-                    self.alert_system.process_frame_alerts(rendered_frame, detection_dict, target_info=alert_target_info)
+                    self.alert_system.process_frame_alerts(alert_frame, detection_dict, target_info=alert_target_info)
 
         except Exception as e:
             logging.error(f"[{self.name}] 帧处理异常: {e}")
