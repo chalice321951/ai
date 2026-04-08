@@ -7,6 +7,7 @@ AI摄像头流检测主程序
 
 import faulthandler
 import logging
+import multiprocessing
 import os
 import queue
 import signal
@@ -776,4 +777,5 @@ def main():
 
 
 if __name__ == '__main__':
+    multiprocessing.set_start_method('forkserver', force=True)
     sys.exit(main())

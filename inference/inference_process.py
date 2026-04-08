@@ -165,8 +165,8 @@ class InferenceProxy:
         self._seq = 0
         self._timeout = float(getattr(config, 'inference_submit_timeout', 30.0) or 30.0)
 
-        self._req_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=8)
-        self._res_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=8)
+        self._req_queue = None
+        self._res_queue = None
         self._process: Optional[multiprocessing.Process] = None
         self._loaded = False
 
@@ -191,7 +191,11 @@ class InferenceProxy:
         model_defs   = self._build_model_defs()
         tracking_cfg = self._build_tracking_cfg()
 
-        self._process = multiprocessing.Process(
+        ctx = multiprocessing.get_context('forkserver')
+        self._req_queue = ctx.Queue(maxsize=8)
+        self._res_queue = ctx.Queue(maxsize=8)
+
+        self._process = ctx.Process(
             target=_worker_main,
             args=(
                 self._stream_name,
