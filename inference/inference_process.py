@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 子进程推理模块 - 每路流独立进程，彻底隔离 CUDA context
-帧数据通过共享内存传递，避免 pickle 序列化大 numpy 数组导致的 native 崩溃
+帧数据通过共享内存传递，控制消息通过 Pipe 传递（避免 Queue._feed 线程 native 崩溃）
 """
 import logging
 import multiprocessing
@@ -13,7 +13,7 @@ from typing import Dict, Any, List, Optional
 
 
 # ──────────────────────────────────────────────
-# 消息协议（只传元数据，不传 frame 数据）
+# 消息协议
 # ──────────────────────────────────────────────
 _CMD_INFER = 'infer'
 _CMD_STOP  = 'stop'
@@ -28,13 +28,14 @@ def _worker_main(
     stream_name: str,
     model_defs: List[Dict[str, Any]],
     tracking_cfg: Dict[str, Any],
-    req_queue: multiprocessing.Queue,
-    res_queue: multiprocessing.Queue,
+    req_conn,
+    res_conn,
+    main_pid: int,
 ):
     """
     子进程入口：加载模型，循环处理推理请求。
-    帧数据通过共享内存读取，不经过 pickle。
-    父进程死亡时子进程自动退出（通过心跳检测）。
+    控制消息通过 Pipe 传递，帧数据通过共享内存读取。
+    父进程死亡时子进程自动退出（心跳检测）。
     """
     import threading
 
@@ -46,14 +47,12 @@ def _worker_main(
 
     logging.info(f"推理子进程启动: stream={stream_name} pid={os.getpid()}")
 
-    parent_pid = os.getppid()
+    parent_pid = main_pid
 
-    # 父进程心跳检测线程：父进程死亡时强制退出子进程
     def _watch_parent():
         while True:
             time.sleep(2.0)
             try:
-                # 发送信号0检测父进程是否存活
                 os.kill(parent_pid, 0)
             except (ProcessLookupError, PermissionError):
                 logging.warning(f"父进程 {parent_pid} 已退出，子进程自动退出")
@@ -61,8 +60,7 @@ def _worker_main(
             except Exception:
                 pass
 
-    watcher = threading.Thread(target=_watch_parent, daemon=True)
-    watcher.start()
+    threading.Thread(target=_watch_parent, daemon=True).start()
 
     models: Dict[str, Any] = {}
     model_cfgs: Dict[str, Dict] = {}
@@ -71,7 +69,7 @@ def _worker_main(
     try:
         from ultralytics import YOLO
         for mdef in model_defs:
-            mid = str(mdef.get('id', 'unknown'))
+            mid   = str(mdef.get('id', 'unknown'))
             mpath = str(mdef.get('path', ''))
             device = str(mdef.get('device', 'cpu'))
             if not mpath or not os.path.exists(mpath):
@@ -93,7 +91,10 @@ def _worker_main(
 
     except Exception as e:
         logging.error(f"推理子进程初始化失败: {e}")
-        res_queue.put({'status': _STATUS_ERROR, 'error': str(e), 'seq': -1})
+        try:
+            res_conn.send({'status': _STATUS_ERROR, 'error': str(e), 'seq': -1})
+        except Exception:
+            pass
         return
 
     if not models:
@@ -109,8 +110,14 @@ def _worker_main(
 
     while True:
         try:
-            msg = req_queue.get(timeout=1.0)
-        except Exception:
+            if not req_conn.poll(1.0):
+                continue
+            msg = req_conn.recv()
+        except EOFError:
+            logging.info("推理子进程 Pipe 已关闭，退出")
+            break
+        except Exception as e:
+            logging.error(f"推理子进程接收消息失败: {e}")
             continue
 
         cmd = msg.get('cmd')
@@ -121,21 +128,23 @@ def _worker_main(
             break
 
         if cmd == _CMD_PING:
-            res_queue.put({'status': _STATUS_PONG, 'seq': seq})
+            try:
+                res_conn.send({'status': _STATUS_PONG, 'seq': seq})
+            except Exception:
+                pass
             continue
 
         if cmd != _CMD_INFER:
             continue
 
-        # 从共享内存读取帧
         shm_name = msg.get('shm_name')
         shape    = msg.get('shape')
         dtype    = msg.get('dtype')
         algo_id  = msg.get('algo_id')
 
         frame = None
-        shm_handle = None
         if shm_name and shape and dtype:
+            shm_handle = None
             try:
                 shm_handle = shm_mod.SharedMemory(name=shm_name)
                 frame = np.ndarray(shape, dtype=dtype, buffer=shm_handle.buf).copy()
@@ -149,13 +158,13 @@ def _worker_main(
                         pass
 
         if frame is None or not models:
-            res_queue.put({'status': _STATUS_OK, 'results': {}, 'seq': seq})
+            try:
+                res_conn.send({'status': _STATUS_OK, 'results': {}, 'seq': seq})
+            except Exception:
+                pass
             continue
 
-        if algo_id and str(algo_id) in models:
-            model_ids = [str(algo_id)]
-        else:
-            model_ids = list(models.keys())
+        model_ids = [str(algo_id)] if (algo_id and str(algo_id) in models) else list(models.keys())
 
         out: Dict[str, Any] = {}
         for mid in model_ids:
@@ -185,7 +194,10 @@ def _worker_main(
             except Exception as e:
                 logging.error(f"推理 [{mid}] 失败: {e}")
 
-        res_queue.put({'status': _STATUS_OK, 'results': out, 'seq': seq})
+        try:
+            res_conn.send({'status': _STATUS_OK, 'results': out, 'seq': seq})
+        except Exception as e:
+            logging.error(f"推理子进程发送结果失败: {e}")
 
     logging.info(f"推理子进程退出: stream={stream_name}")
 
@@ -196,10 +208,9 @@ def _worker_main(
 class InferenceProxy:
     """
     主进程侧代理：管理一个推理子进程的生命周期。
-    帧通过共享内存传递，避免 pickle 序列化 numpy 数组。
+    控制消息通过 Pipe 传递，帧通过共享内存传递。
     """
 
-    # 每隔多少帧检查一次子进程是否存活
     _ALIVE_CHECK_INTERVAL = 30
 
     def __init__(self, stream_name: str, config):
@@ -208,16 +219,13 @@ class InferenceProxy:
         self._seq = 0
         self._timeout = float(getattr(config, 'inference_submit_timeout', 30.0) or 30.0)
 
-        self._req_queue = None
-        self._res_queue = None
+        self._req_conn = None  # 主进程写端
+        self._res_conn = None  # 主进程读端
         self._process: Optional[multiprocessing.Process] = None
         self._loaded = False
-
-        # 缓存 is_alive 结果，避免每帧都调用
         self._alive_cache = False
         self._alive_check_counter = 0
 
-        # 共享内存句柄（主进程侧）
         self._shm: Optional[shm_mod.SharedMemory] = None
         self._shm_shape = None
         self._shm_dtype = None
@@ -244,8 +252,13 @@ class InferenceProxy:
         tracking_cfg = self._build_tracking_cfg()
 
         ctx = multiprocessing.get_context('forkserver')
-        self._req_queue = ctx.Queue(maxsize=4)
-        self._res_queue = ctx.Queue(maxsize=4)
+
+        # 创建两对 Pipe：主进程写请求，子进程读；子进程写结果，主进程读
+        req_parent, req_child = ctx.Pipe(duplex=False)  # 主进程写，子进程读
+        res_child, res_parent = ctx.Pipe(duplex=False)  # 子进程写，主进程读
+
+        self._req_conn = req_parent  # 主进程写端
+        self._res_conn = res_parent  # 主进程读端
 
         self._process = ctx.Process(
             target=_worker_main,
@@ -253,42 +266,49 @@ class InferenceProxy:
                 self._stream_name,
                 model_defs,
                 tracking_cfg,
-                self._req_queue,
-                self._res_queue,
+                req_child,
+                res_child,
+                os.getpid(),
             ),
             daemon=True,
             name=f"InferProc-{self._stream_name}",
         )
         self._process.start()
+
+        # 子进程启动后关闭主进程不需要的端
+        req_child.close()
+        res_child.close()
+
         logging.info(f"[{self._stream_name}] 推理子进程已启动 pid={self._process.pid}")
 
+        # ping/pong 等待就绪
         self._seq += 1
-        self._req_queue.put({'cmd': _CMD_PING, 'seq': self._seq})
         try:
-            resp = self._res_queue.get(timeout=60.0)
-            if resp.get('status') == _STATUS_PONG:
-                self._loaded = True
-                self._alive_cache = True
-                logging.info(f"[{self._stream_name}] 推理子进程就绪")
+            self._req_conn.send({'cmd': _CMD_PING, 'seq': self._seq})
+            if self._res_conn.poll(60.0):
+                resp = self._res_conn.recv()
+                if resp.get('status') == _STATUS_PONG:
+                    self._loaded = True
+                    self._alive_cache = True
+                    logging.info(f"[{self._stream_name}] 推理子进程就绪")
+                else:
+                    logging.error(f"[{self._stream_name}] 推理子进程启动异常: {resp}")
             else:
-                logging.error(f"[{self._stream_name}] 推理子进程启动异常: {resp}")
+                logging.error(f"[{self._stream_name}] 等待推理子进程就绪超时")
         except Exception as e:
-            logging.error(f"[{self._stream_name}] 等待推理子进程就绪超时: {e}")
+            logging.error(f"[{self._stream_name}] 推理子进程就绪握手失败: {e}")
 
     def _ensure_shm(self, frame: np.ndarray) -> bool:
-        """确保共享内存大小匹配当前帧，必要时重新分配"""
         needed = frame.nbytes
         if self._shm is not None:
             if self._shm.size >= needed and self._shm_shape == frame.shape and self._shm_dtype == frame.dtype:
                 return True
-            # 尺寸或类型变了，释放旧的
             try:
                 self._shm.close()
                 self._shm.unlink()
             except Exception:
                 pass
             self._shm = None
-
         try:
             self._shm = shm_mod.SharedMemory(create=True, size=max(needed, 1))
             self._shm_shape = frame.shape
@@ -301,7 +321,6 @@ class InferenceProxy:
     def is_loaded(self) -> bool:
         if not self._loaded:
             return False
-        # 每隔 _ALIVE_CHECK_INTERVAL 帧才真正检查一次进程存活
         self._alive_check_counter += 1
         if self._alive_check_counter >= self._ALIVE_CHECK_INTERVAL:
             self._alive_check_counter = 0
@@ -317,22 +336,14 @@ class InferenceProxy:
         if not self._ensure_shm(frame):
             return {}
 
-        # 写入共享内存
         dst = np.ndarray(frame.shape, dtype=frame.dtype, buffer=self._shm.buf)
         np.copyto(dst, frame)
 
         self._seq += 1
         seq = self._seq
 
-        # 清空积压结果
-        while not self._res_queue.empty():
-            try:
-                self._res_queue.get_nowait()
-            except Exception:
-                break
-
         try:
-            self._req_queue.put_nowait({
+            self._req_conn.send({
                 'cmd':      _CMD_INFER,
                 'shm_name': self._shm.name,
                 'shape':    frame.shape,
@@ -341,13 +352,16 @@ class InferenceProxy:
                 'seq':      seq,
             })
         except Exception:
-            logging.warning(f"[{self._stream_name}] 推理请求队列已满，丢弃本帧")
+            logging.warning(f"[{self._stream_name}] 推理请求发送失败，丢弃本帧")
             return {}
 
         try:
-            resp = self._res_queue.get(timeout=self._timeout)
-        except Exception:
-            logging.error(f"[{self._stream_name}] 等待推理结果超时")
+            if not self._res_conn.poll(self._timeout):
+                logging.error(f"[{self._stream_name}] 等待推理结果超时")
+                return {}
+            resp = self._res_conn.recv()
+        except Exception as e:
+            logging.error(f"[{self._stream_name}] 接收推理结果失败: {e}")
             return {}
 
         if resp.get('status') != _STATUS_OK:
@@ -365,7 +379,7 @@ class InferenceProxy:
 
         if self._process is not None and self._process.is_alive():
             try:
-                self._req_queue.put_nowait({'cmd': _CMD_STOP, 'seq': 0})
+                self._req_conn.send({'cmd': _CMD_STOP, 'seq': 0})
             except Exception:
                 pass
             self._process.join(timeout=5.0)
@@ -375,6 +389,15 @@ class InferenceProxy:
             logging.info(f"[{self._stream_name}] 推理子进程已停止")
 
         self._process = None
+
+        for conn in [self._req_conn, self._res_conn]:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        self._req_conn = None
+        self._res_conn = None
 
         if self._shm is not None:
             try:
