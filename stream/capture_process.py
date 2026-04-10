@@ -191,8 +191,6 @@ def _capture_worker(
             time.sleep(reconnect_delay)
             continue
 
-        _send_status('connected')
-        logging.info("连接成功")
         try:
             if proc.stdout is not None:
                 os.set_blocking(proc.stdout.fileno(), False)
@@ -200,7 +198,6 @@ def _capture_worker(
             pass
 
         consecutive_failures = 0
-        max_failures = 10
         first_frame = True
         pending = bytearray()
         last_data_ts = time.time()
@@ -237,7 +234,6 @@ def _capture_worker(
                 last_data_ts = time.time()
 
             if len(pending) < frame_bytes:
-                consecutive_failures += 1
                 if proc is not None and proc.poll() is not None:
                     err = _read_ffmpeg_error(proc)
                     logging.warning(f"FFmpeg拉流进程退出，准备重连: {err}")
@@ -247,20 +243,16 @@ def _capture_worker(
                     logging.warning(f"{frame_timeout:.1f}s 未收到新视频数据，准备重连")
                     _send_status('interrupted', reason='frame_timeout')
                     break
-                if consecutive_failures >= max_failures:
-                    err = _read_ffmpeg_error(proc)
-                    logging.warning(f"连续 {consecutive_failures} 次读帧失败，重连: {err}")
-                    _send_status('interrupted', reason=err)
-                    break
                 time.sleep(0.05)
                 continue
 
-            consecutive_failures = 0
             frame_buf = bytes(pending[:frame_bytes])
             del pending[:frame_bytes]
             frame = np.frombuffer(frame_buf, dtype=np.uint8).reshape((frame_height, frame_width, 3))
 
             if first_frame:
+                _send_status('connected')
+                logging.info("连接成功")
                 logging.info(f"首帧 size={frame_width}x{frame_height}")
                 first_frame = False
 
