@@ -231,66 +231,40 @@ class StreamProcessor:
         try:
             self._frame_id += 1
             fid = self._frame_id
-            self._trace_stage(fid, 'frame_enter', shape=getattr(frame, 'shape', None), dtype=getattr(frame, 'dtype', None))
             interval = max(1, int(getattr(self.config, 'detection_inference_interval', 5)))
 
             rendered_frame = frame.copy()
-            self._trace_stage(fid, 'frame_copied')
             detection_dict = {}
 
+            # 异步推理：先取上一次结果（非阻塞），再发新请求
             if self.inference_engine.is_loaded() and (fid - self._last_infer_frame_id) >= interval:
+                # 取上一次异步推理结果
+                if getattr(self, '_pending_infer', False):
+                    try:
+                        results = self._collect_async_result()
+                        if results:
+                            self._process_infer_results(results, fid)
+                    except Exception:
+                        pass
+
+                # 发新的异步推理请求
                 self._last_infer_frame_id = fid
-                self._trace_stage(fid, 'infer_start', tracking=bool(getattr(self.config, 'tracking_enabled', False)))
-                results = self.inference_engine.infer(frame, stream_key=self.stream_tracking_key)
-                self._trace_stage(fid, 'infer_end', model_count=len(results))
-                overlays = []
-                total = 0
-                class_names = set()
-                track_ids = set()
-                self._trace_stage(fid, 'postprocess_start')
-                for aid, res in results.items():
-                    cnt = self._count_detections(res)
-                    total += cnt
-                    detection_dict[f"detection_{aid}"] = float(cnt)
-                    model_overlays = self._extract_detection_overlays(res, aid, fid=fid)
-                    overlays.extend(model_overlays)
-                    for overlay in model_overlays:
-                        overlay_class = str(overlay.get('class_name', '')).strip()
-                        if overlay_class:
-                            class_names.add(overlay_class)
-                        track_id = overlay.get('track_id')
-                        if track_id not in (None, ''):
-                            try:
-                                track_ids.add(int(track_id))
-                            except Exception:
-                                track_ids.add(track_id)
-                self._trace_stage(fid, 'postprocess_end', overlay_count=len(overlays), total=total)
-                tracking_enabled = bool(getattr(self.config, 'tracking_enabled', False))
-                alarm_count = len(track_ids) if tracking_enabled and track_ids else total
-                detection_dict["alarm_any_detection"] = float(alarm_count)
-                if alarm_count > 0:
-                    logging.info(f"[{self.name}] 检测到目标: alarm_count={alarm_count}, track_ids={sorted(track_ids, key=lambda item: str(item)) if track_ids else []}, classes={sorted(class_names)}")
-                self._last_tracking_summary = {
-                    'track_count': int(len(track_ids)) if tracking_enabled else int(total),
-                    'track_ids': sorted(track_ids, key=lambda item: str(item)),
-                    'classes': sorted(class_names),
-                }
-                self._last_detection_overlays = overlays
+                self._submit_async_infer(frame)
 
             if self._last_detection_overlays:
-                self._trace_stage(fid, 'draw_start', overlay_count=len(self._last_detection_overlays))
                 rendered_frame = self._draw_detection_overlays(rendered_frame, self._last_detection_overlays)
-                self._trace_stage(fid, 'draw_end')
 
             alert_target_info = None
-            if detection_dict:
-                overlay_classes = sorted({str(item.get('class_name', '')).strip() for item in self._last_detection_overlays if str(item.get('class_name', '')).strip()})
+            track_count = int(self._last_tracking_summary.get('track_count', 0))
+            if track_count > 0:
+                overlay_classes = sorted({str(o.get('class_name', '')).strip() for o in self._last_detection_overlays if str(o.get('class_name', '')).strip()})
                 class_text = ','.join(overlay_classes) if overlay_classes else 'unknown'
+                detection_dict["alarm_any_detection"] = float(track_count)
                 alert_target_info = {
                     'classes': class_text,
                     'class_name': class_text,
-                    'count': int(detection_dict.get("alarm_any_detection", 0.0)),
-                    'track_count': int(self._last_tracking_summary.get('track_count', 0)),
+                    'count': track_count,
+                    'track_count': track_count,
                     'track_ids': list(self._last_tracking_summary.get('track_ids', [])),
                     'tracking_enabled': bool(getattr(self.config, 'tracking_enabled', False)),
                 }
@@ -310,11 +284,83 @@ class StreamProcessor:
             if self.alert_system.alert_handler:
                 alert_frame = rendered_frame.copy()
                 self.alert_system.alert_handler.collect_clip_frame(alert_frame)
-                if detection_dict:
+                if detection_dict and alert_target_info:
                     self.alert_system.process_frame_alerts(alert_frame, detection_dict, target_info=alert_target_info)
 
         except Exception as e:
             logging.error(f"[{self.name}] 帧处理异常: {e}")
+
+    def _submit_async_infer(self, frame: np.ndarray):
+        """异步提交推理请求，不等待结果"""
+        try:
+            proxy = self.inference_engine
+            if not proxy.is_loaded():
+                self._pending_infer = False
+                return
+            frame_c = np.ascontiguousarray(frame, dtype=np.uint8)
+            if not proxy._ensure_shm(frame_c):
+                self._pending_infer = False
+                return
+            dst = np.ndarray(frame_c.shape, dtype=frame_c.dtype, buffer=proxy._shm.buf)
+            np.copyto(dst, frame_c)
+            proxy._seq += 1
+            proxy._req_conn.send({
+                'cmd': 'infer',
+                'shm_name': proxy._shm.name,
+                'shape': frame_c.shape,
+                'dtype': str(frame_c.dtype),
+                'algo_id': None,
+                'seq': proxy._seq,
+            })
+            self._pending_infer = True
+        except Exception as e:
+            logging.debug(f"[{self.name}] 异步推理提交失败: {e}")
+            self._pending_infer = False
+
+    def _collect_async_result(self):
+        """非阻塞取推理结果"""
+        proxy = self.inference_engine
+        try:
+            if proxy._res_conn.poll(0):
+                resp = proxy._res_conn.recv()
+                self._pending_infer = False
+                if resp.get('status') == 'ok':
+                    return resp.get('results', {}) or {}
+        except Exception:
+            self._pending_infer = False
+        return None
+
+    def _process_infer_results(self, results, fid):
+        """处理推理结果，更新检测覆盖层"""
+        overlays = []
+        total = 0
+        class_names = set()
+        track_ids = set()
+        for aid, res in results.items():
+            cnt = self._count_detections(res)
+            total += cnt
+            model_overlays = self._extract_detection_overlays(res, aid, fid=fid)
+            overlays.extend(model_overlays)
+            for overlay in model_overlays:
+                c = str(overlay.get('class_name', '')).strip()
+                if c:
+                    class_names.add(c)
+                tid = overlay.get('track_id')
+                if tid not in (None, ''):
+                    try:
+                        track_ids.add(int(tid))
+                    except Exception:
+                        track_ids.add(tid)
+        tracking_enabled = bool(getattr(self.config, 'tracking_enabled', False))
+        alarm_count = len(track_ids) if tracking_enabled and track_ids else total
+        if alarm_count > 0:
+            logging.info(f"[{self.name}] 检测到目标: alarm_count={alarm_count}, track_ids={sorted(track_ids, key=lambda x: str(x))}, classes={sorted(class_names)}")
+        self._last_tracking_summary = {
+            'track_count': int(len(track_ids)) if tracking_enabled else int(total),
+            'track_ids': sorted(track_ids, key=lambda x: str(x)),
+            'classes': sorted(class_names),
+        }
+        self._last_detection_overlays = overlays
 
     def _on_status_change(self, stream_id: str, status: VideoStreamStatus):
         logging.info(f"[{self.name}] 流状态: {status.value}")
@@ -399,15 +445,17 @@ class StreamProcessor:
 
     def _draw_ai_badge(self, frame: np.ndarray) -> np.ndarray:
         try:
-            badge_text = f"AI {self.name}"
+            badge_text = "AI"
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.8
             thickness = 2
             margin = 12
             (text_w, text_h), baseline = cv2.getTextSize(badge_text, font, font_scale, thickness)
-            x1, y1 = margin, margin
-            x2 = x1 + text_w + 24
-            y2 = y1 + text_h + baseline + 20
+            h, w = frame.shape[:2]
+            x1 = w - text_w - 24 - margin
+            y1 = h - text_h - baseline - 20 - margin
+            x2 = w - margin
+            y2 = h - margin
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 140, 255), -1)
             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 2)
             cv2.putText(frame, badge_text, (x1 + 12, y2 - baseline - 10), font, font_scale, (255, 255, 255), thickness)
@@ -562,7 +610,7 @@ class StreamProcessor:
                 reasons.append(f'stderr={err}')
         if not pipe.stdin or pipe.stdin.closed:
             reasons.append('stdin已关闭')
-        return '; '.join(reasons) if reasons else 'FFmpeg状态异常但未捕获到stderr'
+        return '; '.join(reasons) if reasons else ''
 
     def _restart_ffmpeg(self) -> bool:
         self._close_ffmpeg()
@@ -635,7 +683,10 @@ class StreamProcessor:
 
             if not self._check_ffmpeg_health():
                 failure_reason = self._describe_ffmpeg_failure()
-                logging.warning(f"[{self.name}] FFmpeg异常，尝试重启，原因: {failure_reason}")
+                if failure_reason:
+                    logging.warning(f"[{self.name}] FFmpeg异常，尝试重启，原因: {failure_reason}")
+                else:
+                    logging.warning(f"[{self.name}] FFmpeg异常，尝试重启")
                 if not self._restart_ffmpeg():
                     time.sleep(2.0)
                     next_push_time = time.perf_counter() + interval
