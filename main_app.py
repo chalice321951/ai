@@ -341,7 +341,7 @@ class StreamProcessor:
                     'tracking_enabled': bool(getattr(self.config, 'tracking_enabled', False)),
                 }
 
-            rendered_frame = self._draw_ai_badge(rendered_frame)
+            rendered_frame = self._draw_ai_badge(rendered_frame, fid=fid)
             self._store_latest_rendered_frame(rendered_frame)
             self._last_processed_ts = time.time()
 
@@ -509,25 +509,32 @@ class StreamProcessor:
         except Exception as e:
             logging.debug(f"[{self.name}] 提取绘框信息异常: {e}")
         return overlays
-
-    def _draw_ai_badge(self, frame: np.ndarray) -> np.ndarray:
+    def _draw_ai_badge(self, frame: np.ndarray, fid: Optional[int] = None) -> np.ndarray:
         try:
             badge_text = "AI"
+            ts_text = time.strftime('%H:%M:%S')
+            if fid is not None:
+                ts_text = f"{ts_text} F{fid}"
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.8
             thickness = 2
             margin = 12
             (text_w, text_h), baseline = cv2.getTextSize(badge_text, font, font_scale, thickness)
+            (ts_w, ts_h), ts_baseline = cv2.getTextSize(ts_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
             h, w = frame.shape[:2]
-            x1 = w - text_w - 24 - margin
-            y1 = h - text_h - baseline - 20 - margin
+            box_w = max(text_w + 24, ts_w + 24)
+            box_h = text_h + ts_h + baseline + ts_baseline + 28
+            x1 = w - box_w - margin
+            y1 = h - box_h - margin
             x2 = w - margin
             y2 = h - margin
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 140, 255), -1)
             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 2)
-            cv2.putText(frame, badge_text, (x1 + 12, y2 - baseline - 10), font, font_scale, (255, 255, 255), thickness)
+            cv2.putText(frame, badge_text, (x1 + 12, y1 + text_h + 8), font, font_scale, (255, 255, 255), thickness)
+            cv2.putText(frame, ts_text, (x1 + 12, y2 - ts_baseline - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
         except Exception as e:
-            logging.debug(f"[{self.name}] 绘制AI标识异常: {e}")
+            logging.debug(f"[{self.name}] ??AI????: {e}")
+        return frame
         return frame
 
     def _draw_detection_overlays(self, frame: np.ndarray, overlays) -> np.ndarray:
@@ -766,7 +773,8 @@ class StreamProcessor:
         next_push_time = time.perf_counter()
         last_frame: Optional[np.ndarray] = None
         repeated_frame_count = 0
-        max_repeat_frames = max(1, min(3, fps // 5 or 1))
+        max_repeat_frames = 1
+        stale_repeat_window = max(0.3, interval * 2.5)
         frame_count = 0
 
         while self.is_running:
@@ -791,7 +799,12 @@ class StreamProcessor:
                 frame = latest_frame
                 last_frame = latest_frame
                 repeated_frame_count = 0
-            elif last_frame is not None and repeated_frame_count < max_repeat_frames:
+            elif (
+                last_frame is not None
+                and repeated_frame_count < max_repeat_frames
+                and self._last_processed_ts
+                and (time.time() - self._last_processed_ts) <= stale_repeat_window
+            ):
                 frame = last_frame
                 repeated_frame_count += 1
             else:
