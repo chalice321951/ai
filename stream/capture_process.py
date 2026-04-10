@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-拉流子进程模块 - 每路流独立进程执行 cap.read()，彻底隔离 FFmpeg 全局状态
-帧数据通过共享内存传回主进程，控制消息通过 Pipe 传递
+Capture subprocess that uses FFmpeg to decode network streams into raw BGR frames.
+Frames are passed back through shared memory and control messages use Pipe.
 """
+
 import logging
 import multiprocessing
 import multiprocessing.shared_memory as shm_mod
-import numpy as np
 import os
+import subprocess
 import time
-import cv2
-from urllib.parse import urlparse
 from typing import Optional
+from urllib.parse import urlparse
+
+import numpy as np
 
 _CMD_STOP = 'stop'
 _CMD_PING = 'ping'
@@ -19,8 +21,6 @@ _CMD_PING = 'ping'
 _EVT_FRAME = 'frame'
 _EVT_PONG = 'pong'
 _EVT_STATUS = 'status'
-_EVT_ERROR = 'error'
-_EVT_LOG = 'log'
 
 
 def _capture_worker(
@@ -28,11 +28,12 @@ def _capture_worker(
     stream_url: str,
     pull_device: str,
     capture_options: str,
-    ctrl_conn,      # 主进程 → 子进程 控制管道 (read端)
-    frame_conn,     # 子进程 → 主进程 帧通知管道 (write端)
+    frame_width: int,
+    frame_height: int,
+    ctrl_conn,
+    frame_conn,
     main_pid: int,
 ):
-    """拉流子进程入口"""
     import threading
 
     logging.basicConfig(
@@ -42,7 +43,6 @@ def _capture_worker(
     )
     logging.info(f"拉流子进程启动: stream={stream_id} pid={os.getpid()}")
 
-    # 心跳检测主进程
     def _watch_parent():
         while True:
             time.sleep(2.0)
@@ -56,9 +56,13 @@ def _capture_worker(
 
     threading.Thread(target=_watch_parent, daemon=True).start()
 
-    # 共享内存（子进程侧）
     shm: Optional[shm_mod.SharedMemory] = None
     shm_shape = None
+    stop_flag = False
+    reconnect_delay = 5.0
+    frame_width = max(1, int(frame_width or 1))
+    frame_height = max(1, int(frame_height or 1))
+    frame_bytes = frame_width * frame_height * 3
 
     def _ensure_shm(frame: np.ndarray):
         nonlocal shm, shm_shape
@@ -88,11 +92,55 @@ def _capture_worker(
         except Exception:
             pass
 
-    stop_flag = False
-    reconnect_delay = 5.0
+    def _build_ffmpeg_cmd():
+        scheme = (urlparse(stream_url).scheme or '').lower()
+        cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'warning', '-nostats']
+        if scheme == 'rtsp':
+            cmd += ['-rtsp_transport', 'tcp']
+        cmd += [
+            '-i', stream_url,
+            '-map', '0:v:0',
+            '-an', '-sn', '-dn',
+            '-pix_fmt', 'bgr24',
+            '-f', 'rawvideo',
+            'pipe:1',
+        ]
+        return cmd
+
+    def _terminate_ffmpeg(proc: Optional[subprocess.Popen]):
+        if proc is None:
+            return
+        try:
+            if proc.stdout:
+                proc.stdout.close()
+        except Exception:
+            pass
+        try:
+            if proc.stderr:
+                proc.stderr.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+            proc.wait(timeout=3.0)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=2.0)
+            except Exception:
+                pass
+
+    def _read_ffmpeg_error(proc: Optional[subprocess.Popen]) -> str:
+        if proc is None or proc.stderr is None:
+            return ''
+        try:
+            if proc.poll() is None:
+                return ''
+            return proc.stderr.read().decode('utf-8', errors='ignore').strip()[:500]
+        except Exception:
+            return ''
 
     while not stop_flag:
-        # 检查控制管道
         try:
             while ctrl_conn.poll(0):
                 msg = ctrl_conn.recv()
@@ -113,35 +161,31 @@ def _capture_worker(
         if stop_flag:
             break
 
-        # 打开连接
         _send_status('connecting')
-        os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = capture_options
-        os.environ.setdefault('OPENCV_LOG_LEVEL', 'ERROR')
-        os.environ.setdefault('OPENCV_FFMPEG_LOGLEVEL', '0')
+        ffmpeg_cmd = _build_ffmpeg_cmd()
+        logging.info(f"FFmpeg拉流命令: {' '.join(ffmpeg_cmd)}")
 
-        cap = None
+        proc = None
         try:
-            if hasattr(cv2, 'CAP_FFMPEG'):
-                cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
-            else:
-                cap = cv2.VideoCapture(stream_url)
-
-            if hasattr(cv2, 'CAP_PROP_BUFFERSIZE'):
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            proc = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                bufsize=frame_bytes,
+            )
         except Exception as e:
             logging.error(f"打开流失败: {e}")
             _send_status('error', reason=str(e))
             time.sleep(reconnect_delay)
             continue
 
-        if not cap or not cap.isOpened():
-            logging.warning("无法打开流，等待重连")
-            _send_status('error', reason='cannot_open')
-            if cap:
-                try:
-                    cap.release()
-                except Exception:
-                    pass
+        time.sleep(0.5)
+        if proc.poll() is not None:
+            err = _read_ffmpeg_error(proc)
+            logging.warning(f"无法打开流，等待重连: {err}")
+            _send_status('error', reason=err or 'cannot_open')
+            _terminate_ffmpeg(proc)
             time.sleep(reconnect_delay)
             continue
 
@@ -152,9 +196,7 @@ def _capture_worker(
         max_failures = 10
         first_frame = True
 
-        # 读帧循环
         while not stop_flag:
-            # 检查控制管道
             try:
                 while ctrl_conn.poll(0):
                     msg = ctrl_conn.recv()
@@ -171,25 +213,26 @@ def _capture_worker(
                 break
 
             try:
-                ret, frame = cap.read()
+                raw = proc.stdout.read(frame_bytes) if proc and proc.stdout else b''
             except Exception as e:
-                logging.warning(f"cap.read() 异常: {e}")
+                logging.warning(f"ffmpeg.read() 异常: {e}")
                 break
 
-            if not ret or frame is None or frame.size == 0:
+            if not raw or len(raw) != frame_bytes:
                 consecutive_failures += 1
                 if consecutive_failures >= max_failures:
-                    logging.warning(f"连续 {consecutive_failures} 次读帧失败，重连")
-                    _send_status('interrupted')
+                    err = _read_ffmpeg_error(proc)
+                    logging.warning(f"连续 {consecutive_failures} 次读帧失败，重连: {err}")
+                    _send_status('interrupted', reason=err)
                     break
                 time.sleep(0.05)
                 continue
 
             consecutive_failures = 0
+            frame = np.frombuffer(raw, dtype=np.uint8).reshape((frame_height, frame_width, 3))
 
             if first_frame:
-                h, w = frame.shape[:2]
-                logging.info(f"首帧 size={w}x{h}")
+                logging.info(f"首帧 size={frame_width}x{frame_height}")
                 first_frame = False
 
             frame = np.ascontiguousarray(frame, dtype=np.uint8)
@@ -210,18 +253,12 @@ def _capture_worker(
                 logging.error("发送帧通知失败")
                 break
 
-        # 释放
-        if cap:
-            try:
-                cap.release()
-            except Exception:
-                pass
+        _terminate_ffmpeg(proc)
 
         if not stop_flag:
             _send_status('reconnecting')
             time.sleep(reconnect_delay)
 
-    # 清理共享内存
     if shm is not None:
         try:
             shm.close()
@@ -232,21 +269,24 @@ def _capture_worker(
     logging.info(f"拉流子进程退出: stream={stream_id}")
 
 
-# ──────────────────────────────────────────────
-# 主进程侧代理
-# ──────────────────────────────────────────────
 class CaptureProxy:
-    """
-    主进程侧代理：管理一个拉流子进程的生命周期。
-    帧通过共享内存传递，控制消息通过 Pipe 传递。
-    """
-
-    def __init__(self, stream_id: str, stream_url: str, pull_device: str,
-                 capture_options: str, frame_callback=None, status_callback=None):
+    def __init__(
+        self,
+        stream_id: str,
+        stream_url: str,
+        pull_device: str,
+        capture_options: str,
+        frame_width: int,
+        frame_height: int,
+        frame_callback=None,
+        status_callback=None,
+    ):
         self._stream_id = stream_id
         self._stream_url = stream_url
         self._pull_device = pull_device
         self._capture_options = capture_options
+        self._frame_width = max(1, int(frame_width or 1))
+        self._frame_height = max(1, int(frame_height or 1))
         self._frame_callback = frame_callback
         self._status_callback = status_callback
 
@@ -256,7 +296,6 @@ class CaptureProxy:
         self._reader_thread: Optional[object] = None
         self._running = False
 
-        # 共享内存读取句柄（主进程侧）
         self._shm_cache: Optional[shm_mod.SharedMemory] = None
         self._shm_cache_name: Optional[str] = None
 
@@ -278,6 +317,8 @@ class CaptureProxy:
                 self._stream_url,
                 self._pull_device,
                 self._capture_options,
+                self._frame_width,
+                self._frame_height,
                 ctrl_child_read,
                 frame_child_write,
                 os.getpid(),
@@ -291,7 +332,6 @@ class CaptureProxy:
 
         logging.info(f"[{self._stream_id}] 拉流子进程已启动 pid={self._process.pid}")
 
-        # ping/pong
         try:
             self._ctrl_conn.send({'cmd': _CMD_PING})
             if self._frame_conn.poll(30.0):
@@ -303,7 +343,8 @@ class CaptureProxy:
 
         self._running = True
         self._reader_thread = threading.Thread(
-            target=self._read_loop, daemon=True,
+            target=self._read_loop,
+            daemon=True,
             name=f"CapReader-{self._stream_id}",
         )
         self._reader_thread.start()

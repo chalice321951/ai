@@ -112,6 +112,8 @@ class EnhancedVideoStreamProcessor:
         logging.info(f"[{self.stream_id}] FFmpeg拉流参数: {options}")
         with _capture_open_lock:
             os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = options
+            os.environ.setdefault('OPENCV_FFMPEG_READ_ATTEMPTS', '20000')
+            os.environ.setdefault('OPENCV_FFMPEG_DECODE_ATTEMPTS', '20000')
             with self._suppress_capture_backend_logs():
                 if hasattr(cv2, 'CAP_FFMPEG'):
                     cap = cv2.VideoCapture(self.config.stream_url, cv2.CAP_FFMPEG)

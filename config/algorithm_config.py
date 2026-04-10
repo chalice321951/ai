@@ -302,6 +302,8 @@ class CameraConfig:
         os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = options
         os.environ.setdefault('OPENCV_LOG_LEVEL', 'ERROR')
         os.environ.setdefault('OPENCV_FFMPEG_LOGLEVEL', '0')
+        os.environ.setdefault('OPENCV_FFMPEG_READ_ATTEMPTS', '20000')
+        os.environ.setdefault('OPENCV_FFMPEG_DECODE_ATTEMPTS', '20000')
         with self._suppress_capture_backend_logs():
             if hasattr(cv2, 'CAP_FFMPEG'):
                 return cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)

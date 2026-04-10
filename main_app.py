@@ -124,6 +124,11 @@ class StreamProcessor:
             'track_ids': [],
             'classes': [],
         }
+        self._last_capture_status = 'init'
+        self._last_frame_ts = 0.0
+        self._last_push_ts = 0.0
+        self._last_infer_result_ts = 0.0
+        self._last_infer_result_count = 0
 
         logging.info(f"[{self.name}] StreamProcessor 初始化完成")
 
@@ -196,6 +201,8 @@ class StreamProcessor:
             stream_url=self.input_url,
             pull_device=getattr(self.config, 'pull_device', 'cpu'),
             capture_options=capture_options,
+            frame_width=self._detected_resolution[0],
+            frame_height=self._detected_resolution[1],
             frame_callback=self._on_frame,
             status_callback=self._on_capture_status,
         )
@@ -254,6 +261,7 @@ class StreamProcessor:
         try:
             self._frame_id += 1
             fid = self._frame_id
+            self._last_frame_ts = time.time()
             interval = max(1, int(getattr(self.config, 'detection_inference_interval', 5)))
 
             rendered_frame = frame.copy()
@@ -378,6 +386,8 @@ class StreamProcessor:
         alarm_count = len(track_ids) if tracking_enabled and track_ids else total
         if alarm_count > 0:
             logging.info(f"[{self.name}] 检测到目标: alarm_count={alarm_count}, track_ids={sorted(track_ids, key=lambda x: str(x))}, classes={sorted(class_names)}")
+        self._last_infer_result_ts = time.time()
+        self._last_infer_result_count = int(alarm_count)
         self._last_tracking_summary = {
             'track_count': int(len(track_ids)) if tracking_enabled else int(total),
             'track_ids': sorted(track_ids, key=lambda x: str(x)),
@@ -386,6 +396,7 @@ class StreamProcessor:
         self._last_detection_overlays = overlays
 
     def _on_status_change(self, stream_id: str, status: VideoStreamStatus):
+        self._last_capture_status = status.value
         logging.info(f"[{self.name}] 流状态: {status.value}")
         if status == VideoStreamStatus.INTERRUPTED:
             self.inference_engine.reset_stream_tracking(self.stream_tracking_key)
@@ -685,6 +696,28 @@ class StreamProcessor:
             return self.pipe is not None
         return False
 
+    def _build_pipeline_snapshot(self) -> str:
+        now = time.time()
+        frame_age = (now - self._last_frame_ts) if self._last_frame_ts else -1.0
+        push_age = (now - self._last_push_ts) if self._last_push_ts else -1.0
+        infer_age = (now - self._last_infer_result_ts) if self._last_infer_result_ts else -1.0
+        queue_size = -1
+        try:
+            queue_size = self.push_queue.qsize()
+        except Exception:
+            pass
+        return (
+            f"capture_status={self._last_capture_status}, "
+            f"frame_id={self._frame_id}, "
+            f"frame_age={frame_age:.1f}s, "
+            f"push_age={push_age:.1f}s, "
+            f"infer_age={infer_age:.1f}s, "
+            f"last_alarm_count={self._last_infer_result_count}, "
+            f"queue_size={queue_size}, "
+            f"codec={self._stream_codec or 'unknown'}, "
+            f"output_url={self.output_url or '(none)'}"
+        )
+
     def _check_ffmpeg_health(self) -> bool:
         if not self.pipe:
             return False
@@ -749,6 +782,8 @@ class StreamProcessor:
 
             if not self._check_ffmpeg_health():
                 failure_reason = self._describe_ffmpeg_failure()
+                logging.error(f"[{self.name}] output broken pipe snapshot: {self._build_pipeline_snapshot()}")
+                logging.warning(f"[{self.name}] output health snapshot: {self._build_pipeline_snapshot()}")
                 if failure_reason:
                     logging.warning(f"[{self.name}] FFmpeg异常，尝试重启(退避{self._ffmpeg_restart_backoff:.1f}s)，原因: {failure_reason}")
                 else:
@@ -780,6 +815,7 @@ class StreamProcessor:
                 frame = np.ascontiguousarray(frame, dtype=np.uint8)
                 self.pipe.stdin.write(memoryview(frame))
                 frame_count += 1
+                self._last_push_ts = time.time()
                 next_push_time += interval
 
                 if self.alert_system.alert_handler:
@@ -788,6 +824,7 @@ class StreamProcessor:
                 if frame_count % 500 == 0:
                     logging.info(f"[{self.name}] 已推流 {frame_count} 帧")
             except BrokenPipeError:
+                logging.error(f"[{self.name}] output broken pipe snapshot: {self._build_pipeline_snapshot()}")
                 failure_reason = self._describe_ffmpeg_failure()
                 logging.error(f"[{self.name}] 推流管道断开，尝试恢复，原因: {failure_reason}")
                 if not self._restart_ffmpeg():
@@ -798,6 +835,7 @@ class StreamProcessor:
                 next_push_time = time.perf_counter() + interval
             except Exception as e:
                 logging.error(f"[{self.name}] 推流写入失败: {e}")
+                logging.error(f"[{self.name}] output write-failure snapshot: {self._build_pipeline_snapshot()}")
                 time.sleep(0.5)
                 next_push_time = time.perf_counter() + interval
 
