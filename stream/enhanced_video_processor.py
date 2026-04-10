@@ -14,6 +14,7 @@ from typing import Optional, Callable, List, Any
 from dataclasses import dataclass
 from enum import Enum
 
+from config.algorithm_config import DeviceMode, build_capture_options
 from .stream_health_monitor import StreamHealthMonitor, StreamHealthConfig, StreamHealthStatus
 
 # 全局锁：保护 OPENCV_FFMPEG_CAPTURE_OPTIONS 环境变量设置 + VideoCapture 初始化
@@ -88,22 +89,8 @@ class EnhancedVideoStreamProcessor:
                     pass
 
     def _build_capture_options(self) -> str:
-        scheme = (urlparse(self.config.stream_url).scheme or '').lower()
-        options = []
-        if scheme == 'rtsp':
-            options.extend([
-                'rtsp_transport;tcp',
-                'reorder_queue_size;1024',
-                'buffer_size;2097152',
-                'max_delay;1000000',
-                'stimeout;10000000',
-            ])
-        if self.config.pull_device == 'gpu':
-            options.extend([
-                'hwaccel;cuda',
-                'hwaccel_output_format;cuda',
-            ])
-        return '|'.join(options)
+        pull_device = DeviceMode.GPU if self.config.pull_device == 'gpu' else DeviceMode.CPU
+        return build_capture_options(self.config.stream_url, pull_device)
 
     def _open_capture(self):
         options = self._build_capture_options()

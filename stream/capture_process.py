@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-Capture subprocess that uses FFmpeg to decode network streams into raw BGR frames.
-Frames are passed back through shared memory and control messages use Pipe.
+Capture subprocess backed by FFmpeg.
+
+The subprocess decodes the input stream into raw BGR frames and shares the
+latest frame with the parent process through shared memory.
 """
 
 import logging
 import multiprocessing
 import multiprocessing.shared_memory as shm_mod
 import os
-import select
 import subprocess
+import threading
 import time
-from typing import Optional
+from typing import Dict, Optional
 from urllib.parse import urlparse
 
 import numpy as np
@@ -22,6 +24,22 @@ _CMD_PING = 'ping'
 _EVT_FRAME = 'frame'
 _EVT_PONG = 'pong'
 _EVT_STATUS = 'status'
+
+
+def _parse_capture_options(capture_options: str) -> Dict[str, str]:
+    options: Dict[str, str] = {}
+    if not capture_options:
+        return options
+    for item in capture_options.split('|'):
+        item = item.strip()
+        if not item or ';' not in item:
+            continue
+        key, value = item.split(';', 1)
+        key = key.strip()
+        value = value.strip()
+        if key:
+            options[key] = value
+    return options
 
 
 def _capture_worker(
@@ -35,8 +53,6 @@ def _capture_worker(
     frame_conn,
     main_pid: int,
 ):
-    import threading
-
     logging.basicConfig(
         level=logging.INFO,
         format=f'[%(asctime)s] [%(levelname)s] [cap-{stream_id}] %(message)s',
@@ -44,29 +60,32 @@ def _capture_worker(
     )
     logging.info(f"拉流子进程启动: stream={stream_id} pid={os.getpid()}")
 
+    stop_event = threading.Event()
+    ffmpeg_state = {'proc': None}
+    shm: Optional[shm_mod.SharedMemory] = None
+    shm_shape = None
+    reconnect_delay = 5.0
+    frame_width = max(1, int(frame_width or 1))
+    frame_height = max(1, int(frame_height or 1))
+    frame_bytes = frame_width * frame_height * 3
+    prefer_hwaccel = str(pull_device).lower() == 'gpu'
+
     def _watch_parent():
-        while True:
+        while not stop_event.is_set():
             time.sleep(2.0)
             try:
                 os.kill(main_pid, 0)
             except (ProcessLookupError, PermissionError):
                 logging.warning(f"主进程 {main_pid} 已退出，拉流子进程自动退出")
+                stop_event.set()
+                proc = ffmpeg_state.get('proc')
+                if proc is not None:
+                    _terminate_ffmpeg(proc)
                 os._exit(0)
             except Exception:
                 pass
 
-    threading.Thread(target=_watch_parent, daemon=True).start()
-
-    shm: Optional[shm_mod.SharedMemory] = None
-    shm_shape = None
-    stop_flag = False
-    reconnect_delay = 5.0
-    frame_timeout = 10.0
-    frame_width = max(1, int(frame_width or 1))
-    frame_height = max(1, int(frame_height or 1))
-    frame_bytes = frame_width * frame_height * 3
-
-    def _ensure_shm(frame: np.ndarray):
+    def _ensure_shm(frame: np.ndarray) -> bool:
         nonlocal shm, shm_shape
         needed = frame.nbytes
         if shm is not None:
@@ -78,6 +97,7 @@ def _capture_worker(
             except Exception:
                 pass
             shm = None
+            shm_shape = None
         try:
             shm = shm_mod.SharedMemory(create=True, size=max(needed, 1))
             shm_shape = frame.shape
@@ -88,21 +108,54 @@ def _capture_worker(
 
     def _send_status(status: str, **kwargs):
         try:
-            msg = {'evt': _EVT_STATUS, 'status': status}
-            msg.update(kwargs)
-            frame_conn.send(msg)
+            payload = {'evt': _EVT_STATUS, 'status': status}
+            payload.update(kwargs)
+            frame_conn.send(payload)
         except Exception:
             pass
 
-    def _build_ffmpeg_cmd():
+    def _build_ffmpeg_cmd(use_hwaccel: bool):
         scheme = (urlparse(stream_url).scheme or '').lower()
+        option_map = _parse_capture_options(capture_options)
         cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'warning', '-nostats']
-        if scheme == 'rtsp':
+
+        if scheme == 'rtsp' and 'rtsp_transport' not in option_map:
             cmd += ['-rtsp_transport', 'tcp']
+
+        supported_input_options = {
+            'hwaccel',
+            'rtsp_transport',
+            'reorder_queue_size',
+            'buffer_size',
+            'max_delay',
+            'analyzeduration',
+            'probesize',
+            'fflags',
+            'flags',
+            'rw_timeout',
+            'timeout',
+        }
+        for key, value in option_map.items():
+            mapped_key = 'rw_timeout' if key == 'stimeout' else key
+            if mapped_key == 'hwaccel_output_format':
+                continue
+            if mapped_key == 'hwaccel' and not use_hwaccel:
+                continue
+            if mapped_key in supported_input_options:
+                cmd += [f'-{mapped_key}', value]
+
+        if use_hwaccel and 'hwaccel' not in option_map:
+            cmd += ['-hwaccel', 'cuda']
+
         cmd += [
+            '-fflags', 'nobuffer',
+            '-flags', 'low_delay',
             '-i', stream_url,
             '-map', '0:v:0',
-            '-an', '-sn', '-dn',
+            '-an',
+            '-sn',
+            '-dn',
+            '-vf', f'scale={frame_width}:{frame_height}',
             '-pix_fmt', 'bgr24',
             '-f', 'rawvideo',
             'pipe:1',
@@ -118,11 +171,6 @@ def _capture_worker(
         except Exception:
             pass
         try:
-            if proc.stderr:
-                proc.stderr.close()
-        except Exception:
-            pass
-        try:
             proc.terminate()
             proc.wait(timeout=3.0)
         except Exception:
@@ -131,6 +179,8 @@ def _capture_worker(
                 proc.wait(timeout=2.0)
             except Exception:
                 pass
+        if ffmpeg_state.get('proc') is proc:
+            ffmpeg_state['proc'] = None
 
     def _read_ffmpeg_error(proc: Optional[subprocess.Popen]) -> str:
         if proc is None or proc.stderr is None:
@@ -138,117 +188,118 @@ def _capture_worker(
         try:
             if proc.poll() is None:
                 return ''
-            return proc.stderr.read().decode('utf-8', errors='ignore').strip()[:500]
+            return proc.stderr.read().decode('utf-8', errors='ignore').strip()[:1500]
         except Exception:
             return ''
 
-    while not stop_flag:
-        try:
-            while ctrl_conn.poll(0):
-                msg = ctrl_conn.recv()
-                cmd = msg.get('cmd')
-                if cmd == _CMD_STOP:
-                    stop_flag = True
-                    break
-                if cmd == _CMD_PING:
-                    try:
-                        frame_conn.send({'evt': _EVT_PONG})
-                    except Exception:
-                        pass
-        except EOFError:
-            break
-        except Exception:
-            pass
-
-        if stop_flag:
-            break
-
-        _send_status('connecting')
-        ffmpeg_cmd = _build_ffmpeg_cmd()
-        logging.info(f"FFmpeg拉流命令: {' '.join(ffmpeg_cmd)}")
-
-        proc = None
-        try:
-            proc = subprocess.Popen(
-                ffmpeg_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-                bufsize=frame_bytes,
-            )
-        except Exception as e:
-            logging.error(f"打开流失败: {e}")
-            _send_status('error', reason=str(e))
-            time.sleep(reconnect_delay)
-            continue
-
-        time.sleep(0.5)
-        if proc.poll() is not None:
-            err = _read_ffmpeg_error(proc)
-            logging.warning(f"无法打开流，等待重连: {err}")
-            _send_status('error', reason=err or 'cannot_open')
-            _terminate_ffmpeg(proc)
-            time.sleep(reconnect_delay)
-            continue
-
-        try:
-            if proc.stdout is not None:
-                os.set_blocking(proc.stdout.fileno(), False)
-        except Exception:
-            pass
-
-        consecutive_failures = 0
-        first_frame = True
-        pending = bytearray()
-        last_data_ts = time.time()
-
-        while not stop_flag:
+    def _control_loop():
+        while not stop_event.is_set():
             try:
-                while ctrl_conn.poll(0):
-                    msg = ctrl_conn.recv()
-                    if msg.get('cmd') == _CMD_STOP:
-                        stop_flag = True
-                        break
+                if not ctrl_conn.poll(0.2):
+                    continue
+                msg = ctrl_conn.recv()
             except EOFError:
-                stop_flag = True
+                stop_event.set()
                 break
             except Exception:
-                pass
-
-            if stop_flag:
-                break
-
-            try:
-                raw = b''
-                if proc and proc.stdout:
-                    ready, _, _ = select.select([proc.stdout], [], [], 0.5)
-                    if ready:
-                        chunk_size = max(frame_bytes - len(pending), 65536)
-                        raw = os.read(proc.stdout.fileno(), chunk_size)
-            except Exception as e:
-                logging.warning(f"ffmpeg.read() 异常: {e}")
-                break
-
-            if raw:
-                pending.extend(raw)
-                last_data_ts = time.time()
-
-            if len(pending) < frame_bytes:
-                if proc is not None and proc.poll() is not None:
-                    err = _read_ffmpeg_error(proc)
-                    logging.warning(f"FFmpeg拉流进程退出，准备重连: {err}")
-                    _send_status('interrupted', reason=err or 'ffmpeg_exit')
-                    break
-                if (time.time() - last_data_ts) >= frame_timeout:
-                    logging.warning(f"{frame_timeout:.1f}s 未收到新视频数据，准备重连")
-                    _send_status('interrupted', reason='frame_timeout')
-                    break
-                time.sleep(0.05)
                 continue
 
-            frame_buf = bytes(pending[:frame_bytes])
-            del pending[:frame_bytes]
+            cmd = msg.get('cmd')
+            if cmd == _CMD_STOP:
+                stop_event.set()
+                proc = ffmpeg_state.get('proc')
+                if proc is not None:
+                    _terminate_ffmpeg(proc)
+                break
+            if cmd == _CMD_PING:
+                try:
+                    frame_conn.send({'evt': _EVT_PONG})
+                except Exception:
+                    pass
+
+    def _read_exact(stream, size: int) -> Optional[bytes]:
+        buf = bytearray()
+        remaining = size
+        while remaining > 0 and not stop_event.is_set():
+            try:
+                chunk = stream.read(min(remaining, 1024 * 1024))
+            except Exception as e:
+                logging.warning(f"ffmpeg 读帧异常: {e}")
+                return None
+            if not chunk:
+                return None
+            buf.extend(chunk)
+            remaining -= len(chunk)
+        if stop_event.is_set():
+            return None
+        return bytes(buf)
+
+    threading.Thread(target=_watch_parent, daemon=True).start()
+    threading.Thread(target=_control_loop, daemon=True).start()
+
+    while not stop_event.is_set():
+        _send_status('connecting')
+
+        proc = None
+        launch_error = ''
+        launch_modes = [prefer_hwaccel, False] if prefer_hwaccel else [False]
+        for use_hwaccel in launch_modes:
+            mode_name = 'gpu' if use_hwaccel else 'cpu'
+            ffmpeg_cmd = _build_ffmpeg_cmd(use_hwaccel=use_hwaccel)
+            logging.info(f"FFmpeg拉流命令(mode={mode_name}): {' '.join(ffmpeg_cmd)}")
+            try:
+                proc = subprocess.Popen(
+                    ffmpeg_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL,
+                    bufsize=0,
+                )
+                ffmpeg_state['proc'] = proc
+            except Exception as e:
+                launch_error = str(e)
+                logging.error(f"打开流失败(mode={mode_name}): {e}")
+                proc = None
+                continue
+
+            time.sleep(0.5)
+            if proc.poll() is None:
+                prefer_hwaccel = use_hwaccel
+                break
+
+            launch_error = _read_ffmpeg_error(proc) or 'cannot_open'
+            logging.warning(f"无法打开流(mode={mode_name})，准备切换: {launch_error}")
+            _terminate_ffmpeg(proc)
+            proc = None
+
+        if proc is None:
+            _send_status('error', reason=launch_error or 'cannot_open')
+            time.sleep(reconnect_delay)
+            continue
+
+        first_frame = True
+        while not stop_event.is_set():
+            if proc.stdout is None:
+                _send_status('interrupted', reason='ffmpeg_stdout_missing')
+                break
+
+            frame_buf = _read_exact(proc.stdout, frame_bytes)
+            if frame_buf is None:
+                if stop_event.is_set():
+                    break
+                err = _read_ffmpeg_error(proc)
+                reason = err or ('ffmpeg_exit' if proc.poll() is not None else 'frame_read_failed')
+                if 'Impossible to convert' in reason or 'cuda' in reason.lower():
+                    prefer_hwaccel = False
+                    logging.warning("检测到GPU拉流格式不兼容，后续自动回退CPU拉流")
+                logging.warning(f"FFmpeg拉流中断，准备重连: {reason}")
+                _send_status('interrupted', reason=reason)
+                break
+
             frame = np.frombuffer(frame_buf, dtype=np.uint8).reshape((frame_height, frame_width, 3))
+            frame = np.ascontiguousarray(frame, dtype=np.uint8)
+            if not _ensure_shm(frame):
+                continue
 
             if first_frame:
                 _send_status('connected')
@@ -256,27 +307,22 @@ def _capture_worker(
                 logging.info(f"首帧 size={frame_width}x{frame_height}")
                 first_frame = False
 
-            frame = np.ascontiguousarray(frame, dtype=np.uint8)
-            if not _ensure_shm(frame):
-                continue
-
             dst = np.ndarray(frame.shape, dtype=frame.dtype, buffer=shm.buf)
             np.copyto(dst, frame)
-
             try:
                 frame_conn.send({
                     'evt': _EVT_FRAME,
                     'shm_name': shm.name,
                     'shape': frame.shape,
                     'dtype': str(frame.dtype),
+                    'ts': time.time(),
                 })
             except Exception:
                 logging.error("发送帧通知失败")
                 break
 
         _terminate_ffmpeg(proc)
-
-        if not stop_flag:
+        if not stop_event.is_set():
             _send_status('reconnecting')
             time.sleep(reconnect_delay)
 
@@ -314,15 +360,17 @@ class CaptureProxy:
         self._ctrl_conn = None
         self._frame_conn = None
         self._process: Optional[multiprocessing.Process] = None
-        self._reader_thread: Optional[object] = None
+        self._reader_thread: Optional[threading.Thread] = None
+        self._dispatch_thread: Optional[threading.Thread] = None
         self._running = False
 
         self._shm_cache: Optional[shm_mod.SharedMemory] = None
         self._shm_cache_name: Optional[str] = None
+        self._latest_frame = None
+        self._latest_frame_lock = threading.Lock()
+        self._frame_event = threading.Event()
 
     def start(self):
-        import threading
-
         ctx = multiprocessing.get_context('forkserver')
 
         ctrl_child_read, ctrl_parent_write = ctx.Pipe(duplex=False)
@@ -369,6 +417,12 @@ class CaptureProxy:
             name=f"CapReader-{self._stream_id}",
         )
         self._reader_thread.start()
+        self._dispatch_thread = threading.Thread(
+            target=self._dispatch_loop,
+            daemon=True,
+            name=f"CapDispatch-{self._stream_id}",
+        )
+        self._dispatch_thread.start()
 
     def _read_loop(self):
         while self._running:
@@ -383,26 +437,38 @@ class CaptureProxy:
                 continue
 
             evt = msg.get('evt')
-
             if evt == _EVT_FRAME:
                 shm_name = msg.get('shm_name')
                 shape = msg.get('shape')
                 dtype = msg.get('dtype')
                 if shm_name and shape and dtype:
                     frame = self._read_shm_frame(shm_name, shape, dtype)
-                    if frame is not None and self._frame_callback:
-                        try:
-                            self._frame_callback(self._stream_id, frame)
-                        except Exception as e:
-                            logging.error(f"[{self._stream_id}] 帧回调异常: {e}")
+                    if frame is not None:
+                        with self._latest_frame_lock:
+                            self._latest_frame = frame
+                        self._frame_event.set()
+            elif evt == _EVT_STATUS and self._status_callback:
+                try:
+                    self._status_callback(self._stream_id, msg.get('status', ''))
+                except Exception:
+                    pass
 
-            elif evt == _EVT_STATUS:
-                status = msg.get('status', '')
-                if self._status_callback:
-                    try:
-                        self._status_callback(self._stream_id, status)
-                    except Exception:
-                        pass
+    def _dispatch_loop(self):
+        while self._running:
+            self._frame_event.wait(1.0)
+            frame = None
+            with self._latest_frame_lock:
+                if self._latest_frame is not None:
+                    frame = self._latest_frame
+                    self._latest_frame = None
+                self._frame_event.clear()
+            if frame is None:
+                continue
+            if self._frame_callback:
+                try:
+                    self._frame_callback(self._stream_id, frame)
+                except Exception as e:
+                    logging.error(f"[{self._stream_id}] 帧回调异常: {e}")
 
     def _read_shm_frame(self, shm_name: str, shape, dtype) -> Optional[np.ndarray]:
         try:
@@ -412,6 +478,7 @@ class CaptureProxy:
                 except Exception:
                     pass
                 self._shm_cache = None
+                self._shm_cache_name = None
 
             if self._shm_cache is None:
                 self._shm_cache = shm_mod.SharedMemory(name=shm_name)
@@ -419,13 +486,15 @@ class CaptureProxy:
 
             return np.ndarray(shape, dtype=dtype, buffer=self._shm_cache.buf).copy()
         except Exception as e:
-            logging.error(f"[{self._stream_id}] 读取拉流共享内存失败: {e}")
+            logging.error(f"[{self._stream_id}] 读取共享内存帧失败: {e}")
             self._shm_cache = None
             self._shm_cache_name = None
             return None
 
     def stop(self):
         self._running = False
+        self._frame_event.set()
+
         if self._process is not None and self._process.is_alive():
             try:
                 self._ctrl_conn.send({'cmd': _CMD_STOP})
@@ -454,3 +523,4 @@ class CaptureProxy:
             except Exception:
                 pass
             self._shm_cache = None
+            self._shm_cache_name = None

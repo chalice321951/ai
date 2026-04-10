@@ -10,7 +10,6 @@ import faulthandler
 import logging
 import multiprocessing
 import os
-import queue
 import signal
 import subprocess
 import sys
@@ -97,8 +96,6 @@ class StreamProcessor:
         self.is_running = False
         self._stop_event = threading.Event()
 
-        self.push_queue: queue.Queue = queue.Queue(maxsize=5)
-
         self.alert_system = AlertSystem(config)
         result_path = os.path.join(getattr(config, 'output_directory', './res'), self.name)
         self.alert_system.initialize_alert_handler(stream_cfg, result_path)
@@ -114,9 +111,12 @@ class StreamProcessor:
 
         self.video_processor = None
         self.capture_proxy: Optional[CaptureProxy] = None
+        self._processor_thread: Optional[threading.Thread] = None
+        self._push_thread: Optional[threading.Thread] = None
 
         self._frame_id = 0
         self._last_infer_frame_id = -1
+        self._pending_infer = False
         self._crash_trace_enabled = bool(getattr(self.config, 'crash_trace_enabled', False))
         self._last_detection_overlays = []
         self._last_tracking_summary = {
@@ -124,8 +124,14 @@ class StreamProcessor:
             'track_ids': [],
             'classes': [],
         }
+        self._latest_input_frame: Optional[np.ndarray] = None
+        self._latest_rendered_frame: Optional[np.ndarray] = None
+        self._latest_frame_lock = threading.Lock()
+        self._latest_render_lock = threading.Lock()
+        self._frame_ready_event = threading.Event()
         self._last_capture_status = 'init'
         self._last_frame_ts = 0.0
+        self._last_processed_ts = 0.0
         self._last_push_ts = 0.0
         self._last_infer_result_ts = 0.0
         self._last_infer_result_count = 0
@@ -143,27 +149,9 @@ class StreamProcessor:
             cooldown=cooldown,
         )
         self.alert_system.add_rule(rule)
-
     def _build_capture_options(self) -> str:
-        """构建 FFmpeg 拉流参数，和 EnhancedVideoStreamProcessor 一致"""
-        from urllib.parse import urlparse
-        scheme = (urlparse(self.input_url).scheme or '').lower()
-        options = []
-        if scheme == 'rtsp':
-            options.extend([
-                'rtsp_transport;tcp',
-                'reorder_queue_size;1024',
-                'buffer_size;2097152',
-                'max_delay;1000000',
-                'stimeout;10000000',
-            ])
-        pull_device = getattr(self.config, 'pull_device', 'cpu')
-        if pull_device == 'gpu':
-            options.extend([
-                'hwaccel;cuda',
-                'hwaccel_output_format;cuda',
-            ])
-        return '|'.join(options)
+        return self.config.get_capture_options(self.input_url)
+
 
     def _on_capture_status(self, stream_id: str, status: str):
         """拉流子进程状态回调"""
@@ -199,7 +187,7 @@ class StreamProcessor:
         self.capture_proxy = CaptureProxy(
             stream_id=f"{self.name}_{int(time.time())}",
             stream_url=self.input_url,
-            pull_device=getattr(self.config, 'pull_device', 'cpu'),
+            pull_device=self.config.get_pull_device(),
             capture_options=capture_options,
             frame_width=self._detected_resolution[0],
             frame_height=self._detected_resolution[1],
@@ -208,8 +196,14 @@ class StreamProcessor:
         )
         self.capture_proxy.start()
 
-        push_thread = threading.Thread(target=self._push_loop, daemon=True, name=f"Push-{self.name}")
-        push_thread.start()
+        self._processor_thread = threading.Thread(
+            target=self._process_frames_loop,
+            daemon=True,
+            name=f"Process-{self.name}",
+        )
+        self._processor_thread.start()
+        self._push_thread = threading.Thread(target=self._push_loop, daemon=True, name=f"Push-{self.name}")
+        self._push_thread.start()
 
         logging.info(f"[{self.name}] 启动完成")
 
@@ -217,6 +211,7 @@ class StreamProcessor:
         logging.info(f"[{self.name}] 停止中...")
         self.is_running = False
         self._stop_event.set()
+        self._frame_ready_event.set()
 
         if self.capture_proxy:
             self.capture_proxy.stop()
@@ -234,6 +229,11 @@ class StreamProcessor:
             'classes': [],
         }
         self._last_infer_frame_id = -1
+        self._pending_infer = False
+        with self._latest_frame_lock:
+            self._latest_input_frame = None
+        with self._latest_render_lock:
+            self._latest_rendered_frame = None
 
         self._close_ffmpeg(release_nvenc=True)
         if self._owns_inference_engine:
@@ -258,10 +258,51 @@ class StreamProcessor:
                 pass
 
     def _on_frame(self, stream_id: str, frame: np.ndarray):
+        self._last_frame_ts = time.time()
+        try:
+            frame = np.ascontiguousarray(frame, dtype=np.uint8)
+            with self._latest_frame_lock:
+                self._latest_input_frame = frame
+            self._frame_ready_event.set()
+        except Exception as e:
+            logging.error(f"[{self.name}] 接收帧异常: {e}")
+
+    def _take_latest_input_frame(self) -> Optional[np.ndarray]:
+        with self._latest_frame_lock:
+            frame = self._latest_input_frame
+            self._latest_input_frame = None
+        return frame
+
+    def _store_latest_rendered_frame(self, frame: np.ndarray):
+        frame = np.ascontiguousarray(frame, dtype=np.uint8)
+        with self._latest_render_lock:
+            self._latest_rendered_frame = frame
+
+    def _take_latest_rendered_frame(self) -> Optional[np.ndarray]:
+        with self._latest_render_lock:
+            frame = self._latest_rendered_frame
+            self._latest_rendered_frame = None
+        return frame
+
+    def _process_frames_loop(self):
+        logging.info(f"[{self.name}] 处理线程启动")
+        while self.is_running and not self._stop_event.is_set():
+            self._frame_ready_event.wait(1.0)
+            if self._stop_event.is_set():
+                break
+            frame = self._take_latest_input_frame()
+            if frame is None:
+                self._frame_ready_event.clear()
+                continue
+            if self._latest_input_frame is None:
+                self._frame_ready_event.clear()
+            self._process_frame(frame)
+        logging.info(f"[{self.name}] 处理线程结束")
+
+    def _process_frame(self, frame: np.ndarray):
         try:
             self._frame_id += 1
             fid = self._frame_id
-            self._last_frame_ts = time.time()
             interval = max(1, int(getattr(self.config, 'detection_inference_interval', 5)))
 
             rendered_frame = frame.copy()
@@ -301,16 +342,8 @@ class StreamProcessor:
                 }
 
             rendered_frame = self._draw_ai_badge(rendered_frame)
-
-            try:
-                if self.push_queue.full():
-                    try:
-                        self.push_queue.get_nowait()
-                    except queue.Empty:
-                        pass
-                self.push_queue.put_nowait(rendered_frame)
-            except queue.Full:
-                pass
+            self._store_latest_rendered_frame(rendered_frame)
+            self._last_processed_ts = time.time()
 
             if self.alert_system.alert_handler:
                 alert_frame = rendered_frame.copy()
@@ -407,12 +440,12 @@ class StreamProcessor:
                 'classes': [],
             }
             self._last_infer_frame_id = -1
-            try:
-                while not self.push_queue.empty():
-                    self.push_queue.get_nowait()
-            except Exception:
-                pass
-        elif status == VideoStreamStatus.READING:
+            self._pending_infer = False
+            with self._latest_frame_lock:
+                self._latest_input_frame = None
+            with self._latest_render_lock:
+                self._latest_rendered_frame = None
+        elif status in (VideoStreamStatus.READING, VideoStreamStatus.CONNECTED):
             self._push_reset_needed = True
 
     def _on_error(self, stream_id: str, error_msg: str):
@@ -616,7 +649,7 @@ class StreamProcessor:
         if self._stream_codec == VideoCodec.LIBX264.value:
             return VideoCodec.LIBX264.value
 
-        push_device = str(getattr(self.config, 'push_device', 'auto')).lower()
+        push_device = self.config.get_push_device()
         want_nvenc = False
         if push_device == 'cpu':
             return VideoCodec.LIBX264.value
@@ -699,21 +732,20 @@ class StreamProcessor:
     def _build_pipeline_snapshot(self) -> str:
         now = time.time()
         frame_age = (now - self._last_frame_ts) if self._last_frame_ts else -1.0
+        process_age = (now - self._last_processed_ts) if self._last_processed_ts else -1.0
         push_age = (now - self._last_push_ts) if self._last_push_ts else -1.0
         infer_age = (now - self._last_infer_result_ts) if self._last_infer_result_ts else -1.0
-        queue_size = -1
-        try:
-            queue_size = self.push_queue.qsize()
-        except Exception:
-            pass
+        with self._latest_render_lock:
+            rendered_ready = self._latest_rendered_frame is not None
         return (
             f"capture_status={self._last_capture_status}, "
             f"frame_id={self._frame_id}, "
             f"frame_age={frame_age:.1f}s, "
+            f"process_age={process_age:.1f}s, "
             f"push_age={push_age:.1f}s, "
             f"infer_age={infer_age:.1f}s, "
             f"last_alarm_count={self._last_infer_result_count}, "
-            f"queue_size={queue_size}, "
+            f"rendered_ready={rendered_ready}, "
             f"codec={self._stream_codec or 'unknown'}, "
             f"output_url={self.output_url or '(none)'}"
         )
@@ -739,14 +771,9 @@ class StreamProcessor:
 
         while self.is_running:
             if self._push_reset_needed:
-                try:
-                    while not self.push_queue.empty():
-                        self.push_queue.get_nowait()
-                    last_frame = None
-                    repeated_frame_count = 0
-                    self._push_reset_needed = False
-                except Exception:
-                    pass
+                last_frame = None
+                repeated_frame_count = 0
+                self._push_reset_needed = False
 
             now = time.perf_counter()
             sleep_time = next_push_time - now
@@ -757,16 +784,12 @@ class StreamProcessor:
                 next_push_time = now
 
             frame = None
-            got_new_frame = False
-            try:
-                while True:
-                    frame = self.push_queue.get_nowait()
-                    got_new_frame = True
-            except queue.Empty:
-                pass
+            latest_frame = self._take_latest_rendered_frame()
+            got_new_frame = latest_frame is not None
 
             if got_new_frame:
-                last_frame = frame
+                frame = latest_frame
+                last_frame = latest_frame
                 repeated_frame_count = 0
             elif last_frame is not None and repeated_frame_count < max_repeat_frames:
                 frame = last_frame
@@ -934,9 +957,9 @@ def main():
         logging.info(f"  [{s.get('name')}] {input_url} -> {output_url}")
 
     if config.push_enabled:
-        push_dev = getattr(config, 'push_device', 'auto')
+        push_dev = config.get_push_device()
         nvenc_info = f"，NVENC最大并发={_NVENC_MAX_SESSIONS}，超出自动回退libx264" if push_dev == 'gpu' else ''
-        logging.info(f"AI输出流已启用，拉流设备={getattr(config, 'pull_device', 'cpu')}，推流设备={push_dev}，编码模式={config.get_video_codec()}{nvenc_info}")
+        logging.info(f"AI输出流已启用，拉流设备={config.get_pull_device()}，推流设备={push_dev}，编码模式={config.get_video_codec()}{nvenc_info}")
     else:
         logging.info("AI输出流已禁用，仅本地处理")
 

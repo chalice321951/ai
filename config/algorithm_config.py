@@ -24,6 +24,32 @@ class DeviceMode(Enum):
     GPU = "gpu"
 
 
+def normalize_device_mode(value: Any, default: DeviceMode) -> DeviceMode:
+    raw = str(value or default.value).strip().lower()
+    for item in DeviceMode:
+        if item.value == raw:
+            return item
+    return default
+
+
+def build_capture_options(stream_url: str, pull_device: DeviceMode) -> str:
+    scheme = (urlparse(stream_url).scheme or '').lower()
+    options = []
+    if scheme == 'rtsp':
+        options.extend([
+            'rtsp_transport;tcp',
+            'reorder_queue_size;1024',
+            'buffer_size;2097152',
+            'max_delay;1000000',
+            'stimeout;10000000',
+        ])
+    if pull_device == DeviceMode.GPU:
+        options.extend([
+            'hwaccel;cuda',
+        ])
+    return '|'.join(options)
+
+
 class AlgorithmMode(Enum):
     REALTIME_MULTI = "realtime_multi"
     TRACKING_ONLY = "tracking_only"
@@ -127,16 +153,10 @@ class CameraConfig:
 
     def _load_stream_device_config(self):
         stream = self.config.get('stream', {})
-        pull_device = str(stream.get('pull_device', 'cpu')).strip().lower() or 'cpu'
-        push_device = str(stream.get('push_device', 'auto')).strip().lower() or 'auto'
-
-        if pull_device not in {item.value for item in DeviceMode}:
-            pull_device = DeviceMode.CPU.value
-        if push_device not in {item.value for item in DeviceMode}:
-            push_device = DeviceMode.AUTO.value
-
-        self.pull_device = pull_device
-        self.push_device = push_device
+        self.pull_device_mode = normalize_device_mode(stream.get('pull_device', DeviceMode.CPU.value), DeviceMode.CPU)
+        self.push_device_mode = normalize_device_mode(stream.get('push_device', DeviceMode.AUTO.value), DeviceMode.AUTO)
+        self.pull_device = self.pull_device_mode.value
+        self.push_device = self.push_device_mode.value
 
     def _normalize_model_entries(self, models_cfg: dict) -> List[Dict[str, Any]]:
         normalized: List[Dict[str, Any]] = []
@@ -223,9 +243,9 @@ class CameraConfig:
         self.auto_detect_resolution = bool(video.get('auto_detect_resolution', True))
         self.push_enabled = bool(video.get('push_enabled', True))
         codec_str = str(video.get('push_codec', 'auto')).lower()
-        if self.push_device == DeviceMode.CPU.value and codec_str in {VideoCodec.AUTO.value, VideoCodec.H264_NVENC.value}:
+        if self.push_device_mode == DeviceMode.CPU and codec_str in {VideoCodec.AUTO.value, VideoCodec.H264_NVENC.value}:
             codec_str = VideoCodec.LIBX264.value
-        elif self.push_device == DeviceMode.GPU.value and codec_str == VideoCodec.AUTO.value:
+        elif self.push_device_mode == DeviceMode.GPU and codec_str == VideoCodec.AUTO.value:
             codec_str = VideoCodec.H264_NVENC.value
         try:
             self.video_codec = VideoCodec(codec_str)
@@ -268,6 +288,27 @@ class CameraConfig:
     def is_auto_codec_enabled(self) -> bool:
         return self.video_codec == VideoCodec.AUTO
 
+    def get_pull_device(self) -> str:
+        return self.pull_device_mode.value
+
+    def get_push_device(self) -> str:
+        return self.push_device_mode.value
+
+    def prefers_gpu_pull(self) -> bool:
+        return self.pull_device_mode == DeviceMode.GPU
+
+    def prefers_cpu_pull(self) -> bool:
+        return self.pull_device_mode == DeviceMode.CPU
+
+    def prefers_auto_pull(self) -> bool:
+        return self.pull_device_mode == DeviceMode.AUTO
+
+    def prefers_gpu_push(self) -> bool:
+        return self.push_device_mode == DeviceMode.GPU
+
+    def prefers_cpu_push(self) -> bool:
+        return self.push_device_mode == DeviceMode.CPU
+
     def get_alarm_config(self) -> dict:
         return {
             'alarm_target_threshold': self.alarm_target_threshold,
@@ -279,22 +320,10 @@ class CameraConfig:
         }
 
     def _build_capture_options(self, stream_url: str) -> str:
-        scheme = (urlparse(stream_url).scheme or '').lower()
-        options = []
-        if scheme == 'rtsp':
-            options.extend([
-                'rtsp_transport;tcp',
-                'reorder_queue_size;1024',
-                'buffer_size;2097152',
-                'max_delay;1000000',
-                'stimeout;10000000',
-            ])
-        if self.pull_device == DeviceMode.GPU.value:
-            options.extend([
-                'hwaccel;cuda',
-                'hwaccel_output_format;cuda',
-            ])
-        return '|'.join(options)
+        return build_capture_options(stream_url, self.pull_device_mode)
+
+    def get_capture_options(self, stream_url: str) -> str:
+        return self._build_capture_options(stream_url)
 
     def _open_capture(self, stream_url: str):
         import cv2
