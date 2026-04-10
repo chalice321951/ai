@@ -161,7 +161,7 @@
     }
   },
   "performance": {
-    "detection_inference_interval": 1,
+    "detection_inference_interval": 3,
     "result_max_back_frames": 30
   },
   "alarm": {
@@ -183,11 +183,11 @@
     "default_width": 1920,
     "default_height": 1080,
     "fps": 25,
-    "push_fps": 25,
-    "bitrate": "4M",
-    "max_bitrate": "6M",
-    "buffer_size": "2M",
-    "gop_size": 25,
+    "push_fps": 10,
+    "bitrate": "2M",
+    "max_bitrate": "3M",
+    "buffer_size": "1M",
+    "gop_size": 10,
     "push_enabled": true,
     "push_codec": "auto",
     "encoding_preset": "p1"

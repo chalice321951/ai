@@ -23,6 +23,26 @@ from urllib.parse import urlparse
 import cv2
 import numpy as np
 
+# ── 全局 NVENC 会话计数器 ──
+_nvenc_lock = threading.Lock()
+_nvenc_count = 0
+_NVENC_MAX_SESSIONS = 5  # 消费级GPU一般限制5~8，保守取5
+
+def _nvenc_acquire() -> bool:
+    """尝试获取一个 NVENC 会话槽位，成功返回 True"""
+    global _nvenc_count
+    with _nvenc_lock:
+        if _nvenc_count < _NVENC_MAX_SESSIONS:
+            _nvenc_count += 1
+            return True
+        return False
+
+def _nvenc_release():
+    """释放一个 NVENC 会话槽位"""
+    global _nvenc_count
+    with _nvenc_lock:
+        _nvenc_count = max(0, _nvenc_count - 1)
+
 # 项目根目录加入路径
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
@@ -88,6 +108,9 @@ class StreamProcessor:
         self._detected_resolution: Optional[tuple] = None
         self._push_ffmpeg_resolution: Optional[tuple] = None
         self._push_reset_needed = False
+        self._stream_codec: Optional[str] = None  # 本流实际使用的编码器
+        self._using_nvenc = False  # 本流是否占用了 NVENC 槽位
+        self._ffmpeg_restart_backoff = 2.0  # FFmpeg重启退避时间
 
         self.video_processor = None
         self.capture_proxy: Optional[CaptureProxy] = None
@@ -205,7 +228,7 @@ class StreamProcessor:
         }
         self._last_infer_frame_id = -1
 
-        self._close_ffmpeg()
+        self._close_ffmpeg(release_nvenc=True)
         if self._owns_inference_engine:
             try:
                 self.inference_engine.cleanup()
@@ -529,49 +552,88 @@ class StreamProcessor:
                 raise ValueError(f"不支持的推流协议: {output_scheme}")
             return cmd
 
-        for attempt in range(2):
-            codec = self._resolve_push_codec()
-            hw = codec == VideoCodec.H264_NVENC.value
-            cmd = _build_cmd(codec, hw)
-            logging.info(f"[{self.name}] FFmpeg命令: {' '.join(cmd)}")
+        # 确定本流使用的编码器（带 NVENC 槽位管理）
+        codec = self._resolve_push_codec()
+        hw = codec == VideoCodec.H264_NVENC.value
+
+        codecs_to_try = [codec]
+        if hw:
+            codecs_to_try.append(VideoCodec.LIBX264.value)
+
+        for attempt, try_codec in enumerate(codecs_to_try):
+            try_hw = try_codec == VideoCodec.H264_NVENC.value
+            cmd = _build_cmd(try_codec, try_hw)
+            logging.info(f"[{self.name}] FFmpeg命令(尝试{attempt + 1}, codec={try_codec}): {' '.join(cmd)}")
             try:
                 pipe = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=0)
             except Exception as e:
                 logging.error(f"[{self.name}] 启动FFmpeg失败: {e}")
-                break
-            time.sleep(0.2)
+                if try_hw and self._using_nvenc:
+                    _nvenc_release()
+                    self._using_nvenc = False
+                continue
+            time.sleep(0.3)
             if pipe.poll() is not None:
                 err = ''
                 try:
-                    err = pipe.stderr.read().decode('utf-8', errors='ignore')[:300]
+                    err = pipe.stderr.read().decode('utf-8', errors='ignore')[:500]
                 except Exception:
                     pass
-                logging.error(f"[{self.name}] FFmpeg启动即退出(尝试{attempt + 1}): {err}")
+                logging.error(f"[{self.name}] FFmpeg启动即退出(codec={try_codec}): {err}")
                 try:
                     pipe.kill()
                 except Exception:
                     pass
-                if attempt == 0 and ('nvenc' in err.lower() or hw):
-                    self.config.video_codec = VideoCodec.LIBX264
-                    logging.warning(f"[{self.name}] GPU编码不可用，回退libx264")
+                # NVENC 失败，释放槽位，回退 libx264
+                if try_hw and self._using_nvenc:
+                    _nvenc_release()
+                    self._using_nvenc = False
+                    logging.warning(f"[{self.name}] NVENC编码失败，回退libx264")
                 continue
+            # 启动成功
             self.pipe = pipe
-            logging.info(f"[{self.name}] FFmpeg推流进程启动成功 -> {output_url}")
+            self._stream_codec = try_codec
+            self._ffmpeg_restart_backoff = 2.0  # 成功后重置退避
+            logging.info(f"[{self.name}] FFmpeg推流启动成功(codec={try_codec}) -> {output_url}")
             return
 
-        logging.error(f"[{self.name}] FFmpeg推流进程启动失败")
+        logging.error(f"[{self.name}] FFmpeg推流进程启动失败（所有编码器均失败）")
 
     def _resolve_push_codec(self) -> str:
+        """决定本流使用的编码器，带 NVENC 会话槽位管理"""
+        # 如果已经确定了回退编码器，继续使用
+        if self._stream_codec == VideoCodec.LIBX264.value:
+            return VideoCodec.LIBX264.value
+
         push_device = str(getattr(self.config, 'push_device', 'auto')).lower()
+        want_nvenc = False
         if push_device == 'cpu':
             return VideoCodec.LIBX264.value
-        if push_device == 'gpu':
-            return VideoCodec.H264_NVENC.value
-        if self.config.is_auto_codec_enabled():
-            return VideoCodec.H264_NVENC.value
-        return self.config.get_video_codec()
+        elif push_device == 'gpu':
+            want_nvenc = True
+        elif self.config.is_auto_codec_enabled():
+            want_nvenc = True
+        else:
+            codec_val = self.config.get_video_codec()
+            want_nvenc = (codec_val == VideoCodec.H264_NVENC.value)
 
-    def _close_ffmpeg(self):
+        if want_nvenc:
+            # 如果本流已经持有 NVENC 槽位，直接用
+            if self._using_nvenc:
+                return VideoCodec.H264_NVENC.value
+            # 尝试获取 NVENC 槽位
+            if _nvenc_acquire():
+                self._using_nvenc = True
+                logging.info(f"[{self.name}] 获取NVENC槽位成功")
+                return VideoCodec.H264_NVENC.value
+            else:
+                logging.warning(f"[{self.name}] NVENC槽位已满，使用libx264")
+                self._stream_codec = VideoCodec.LIBX264.value
+                return VideoCodec.LIBX264.value
+
+        return VideoCodec.LIBX264.value
+
+    def _close_ffmpeg(self, release_nvenc: bool = False):
         if self.pipe:
             try:
                 if self.pipe.stdin and not self.pipe.stdin.closed:
@@ -584,6 +646,10 @@ class StreamProcessor:
             except Exception:
                 pass
             self.pipe = None
+        if release_nvenc and self._using_nvenc:
+            _nvenc_release()
+            self._using_nvenc = False
+            self._stream_codec = None  # 下次重新决定编码器
 
     def _read_ffmpeg_stderr(self, pipe: Optional[subprocess.Popen]) -> str:
         if not pipe or not pipe.stderr:
@@ -613,7 +679,7 @@ class StreamProcessor:
         return '; '.join(reasons) if reasons else ''
 
     def _restart_ffmpeg(self) -> bool:
-        self._close_ffmpeg()
+        self._close_ffmpeg(release_nvenc=True)
         if self.output_url:
             self._open_ffmpeg(self.output_url)
             return self.pipe is not None
@@ -684,11 +750,17 @@ class StreamProcessor:
             if not self._check_ffmpeg_health():
                 failure_reason = self._describe_ffmpeg_failure()
                 if failure_reason:
-                    logging.warning(f"[{self.name}] FFmpeg异常，尝试重启，原因: {failure_reason}")
+                    logging.warning(f"[{self.name}] FFmpeg异常，尝试重启(退避{self._ffmpeg_restart_backoff:.1f}s)，原因: {failure_reason}")
                 else:
-                    logging.warning(f"[{self.name}] FFmpeg异常，尝试重启")
+                    logging.warning(f"[{self.name}] FFmpeg异常，尝试重启(退避{self._ffmpeg_restart_backoff:.1f}s)")
+                time.sleep(self._ffmpeg_restart_backoff)
                 if not self._restart_ffmpeg():
-                    time.sleep(2.0)
+                    # 指数退避，最大30秒
+                    self._ffmpeg_restart_backoff = min(30.0, self._ffmpeg_restart_backoff * 2)
+                    next_push_time = time.perf_counter() + interval
+                    continue
+                else:
+                    self._ffmpeg_restart_backoff = 2.0  # 成功后重置
                     next_push_time = time.perf_counter() + interval
                     continue
 
@@ -719,7 +791,10 @@ class StreamProcessor:
                 failure_reason = self._describe_ffmpeg_failure()
                 logging.error(f"[{self.name}] 推流管道断开，尝试恢复，原因: {failure_reason}")
                 if not self._restart_ffmpeg():
-                    time.sleep(3.0)
+                    self._ffmpeg_restart_backoff = min(30.0, self._ffmpeg_restart_backoff * 2)
+                    time.sleep(self._ffmpeg_restart_backoff)
+                else:
+                    self._ffmpeg_restart_backoff = 2.0
                 next_push_time = time.perf_counter() + interval
             except Exception as e:
                 logging.error(f"[{self.name}] 推流写入失败: {e}")
@@ -821,7 +896,9 @@ def main():
         logging.info(f"  [{s.get('name')}] {input_url} -> {output_url}")
 
     if config.push_enabled:
-        logging.info(f"AI输出流已启用，拉流设备={getattr(config, 'pull_device', 'cpu')}，推流设备={getattr(config, 'push_device', 'auto')}，编码模式={config.get_video_codec()}")
+        push_dev = getattr(config, 'push_device', 'auto')
+        nvenc_info = f"，NVENC最大并发={_NVENC_MAX_SESSIONS}，超出自动回退libx264" if push_dev == 'gpu' else ''
+        logging.info(f"AI输出流已启用，拉流设备={getattr(config, 'pull_device', 'cpu')}，推流设备={push_dev}，编码模式={config.get_video_codec()}{nvenc_info}")
     else:
         logging.info("AI输出流已禁用，仅本地处理")
 
