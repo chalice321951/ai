@@ -25,7 +25,7 @@ import numpy as np
 # ── 全局 NVENC 会话计数器 ──
 _nvenc_lock = threading.Lock()
 _nvenc_count = 0
-_NVENC_MAX_SESSIONS = 5  # 消费级GPU一般限制5~8，保守取5
+_NVENC_MAX_SESSIONS = 10  # 当前按 10 路压测，超出后自动回退 libx264
 
 def _terminate_subprocess(proc: Optional[subprocess.Popen], timeout: float = 3.0):
     if proc is None:
@@ -209,13 +209,11 @@ class StreamProcessor:
         self._stop_event.clear()
         self.inference_scheduler.ensure_stream(self.stream_tracking_key)
 
-        try:
-            w, h = self.config.auto_detect_and_update_resolution(self.input_url)
-            self._detected_resolution = (w, h)
-            logging.info(f"[{self.name}] 分辨率: {w}x{h}")
-        except Exception as e:
-            logging.warning(f"[{self.name}] 分辨率检测失败: {e}，使用默认值")
-            self._detected_resolution = self.config.get_default_resolution()
+        self._detected_resolution = self.config.get_default_resolution()
+        logging.info(
+            f"[{self.name}] 启动时跳过阻塞分辨率探测，先使用默认分辨率: "
+            f"{self._detected_resolution[0]}x{self._detected_resolution[1]}"
+        )
 
         if self.output_url:
             self._open_ffmpeg(self.output_url)
@@ -301,6 +299,20 @@ class StreamProcessor:
         self._last_frame_ts = time.time()
         try:
             frame = np.ascontiguousarray(frame, dtype=np.uint8)
+            fh, fw = frame.shape[:2]
+            actual_resolution = (fw, fh)
+            if self._detected_resolution != actual_resolution:
+                previous_resolution = self._detected_resolution
+                self._detected_resolution = actual_resolution
+                if previous_resolution:
+                    logging.info(
+                        f"[{self.name}] 首帧确认真实分辨率: {fw}x{fh} "
+                        f"(原启动值 {previous_resolution[0]}x{previous_resolution[1]})"
+                    )
+                else:
+                    logging.info(f"[{self.name}] 首帧确认真实分辨率: {fw}x{fh}")
+                if self.output_url and self._push_ffmpeg_resolution and self._push_ffmpeg_resolution != actual_resolution:
+                    self._push_reset_needed = True
             with self._latest_frame_lock:
                 self._latest_input_frame = frame
             self._frame_ready_event.set()
