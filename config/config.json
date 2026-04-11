@@ -7,7 +7,7 @@
     "device": "gpu"
   },
   "stream": {
-    "pull_device": "gpu",
+    "pull_device": "cpu",
     "push_device": "gpu"
   },
   "tracking": {

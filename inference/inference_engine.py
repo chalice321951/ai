@@ -2,9 +2,8 @@
 """
 Inference engine based on Ultralytics YOLO.
 
-Provides single-frame inference plus micro-batch inference for multi-stream
-scenarios. Tracking mode keeps per-stream model instances and therefore falls
-back to sequential execution to preserve tracker state isolation.
+All streams share the same loaded model instances. Tracking is handled outside
+the engine so batch inference can stay fully shared across streams.
 """
 import logging
 import os
@@ -21,7 +20,6 @@ class InferenceEngine:
         self._lock = threading.Lock()
         self._models: Dict[str, Any] = {}
         self._model_configs: Dict[str, Dict[str, Any]] = {}
-        self._tracking_models_by_stream: Dict[str, Dict[str, Any]] = {}
         self._loaded = False
         self._torch = None
         self._yolo_class = None
@@ -94,7 +92,7 @@ class InferenceEngine:
 
                 runtime_device = self._resolve_device(model_cfg.get('device'))
                 try:
-                    logging.info(f"加载检测模型[{model_id}] device={runtime_device}: {model_path}")
+                    logging.info(f"加载检测模型 [{model_id}] device={runtime_device}: {model_path}")
                     model = self._create_model_instance(model_path, runtime_device)
                     self._models[model_id] = model
                     self._model_configs[model_id] = {
@@ -102,7 +100,9 @@ class InferenceEngine:
                         'name': model_cfg.get('name', model_id),
                         'task': model_cfg.get('task', 'detection'),
                         'path': model_path,
-                        'conf_threshold': float(model_cfg.get('conf_threshold', getattr(self.config, 'default_conf_threshold', 0.5))),
+                        'conf_threshold': float(
+                            model_cfg.get('conf_threshold', getattr(self.config, 'default_conf_threshold', 0.5))
+                        ),
                         'device': runtime_device,
                     }
                     logging.info(f"模型 [{model_id}] 加载成功")
@@ -119,35 +119,6 @@ class InferenceEngine:
         except Exception as e:
             logging.error(f"加载模型失败: {e}")
 
-    def _get_models_for_inference(self, tracking_enabled: bool, stream_key: Optional[str]) -> Dict[str, Any]:
-        if not tracking_enabled:
-            return self._models
-
-        stream_name = str(stream_key or '').strip()
-        if not stream_name:
-            return self._models
-
-        stream_models = self._tracking_models_by_stream.get(stream_name)
-        if stream_models is not None:
-            return stream_models
-
-        stream_models = {}
-        for model_id, model_cfg in self._model_configs.items():
-            model_path = str(model_cfg.get('path', ''))
-            if not model_path:
-                continue
-            try:
-                stream_models[model_id] = self._create_model_instance(model_path, model_cfg.get('device', 'cpu'))
-            except Exception as e:
-                logging.error(f"为流 [{stream_name}] 创建跟踪模型 [{model_id}] 失败: {e}")
-
-        if stream_models:
-            self._tracking_models_by_stream[stream_name] = stream_models
-            logging.info(f"流 [{stream_name}] 已创建独立跟踪状态，模型数={len(stream_models)}")
-            return stream_models
-
-        return self._models
-
     def _trace_infer_stage(self, stream_key: Optional[str], model_id: str, stage: str, **kwargs):
         if not self._trace_enabled:
             return
@@ -162,10 +133,6 @@ class InferenceEngine:
 
     def _infer_with_model_store(self, model_store: Dict[str, Any], frame, algo_id: str = None, stream_key: str = None) -> Dict[str, Any]:
         results: Dict[str, Any] = {}
-        tracking_enabled = bool(getattr(self.config, 'tracking_enabled', False))
-        tracking_persist = bool(getattr(self.config, 'tracking_persist', True))
-        tracking_tracker = str(getattr(self.config, 'tracking_tracker', 'bytetrack.yaml') or 'bytetrack.yaml')
-        tracking_conf = float(getattr(self.config, 'tracking_conf_threshold', getattr(self.config, 'default_conf_threshold', 0.5)))
 
         if algo_id and str(algo_id) in model_store:
             model_ids = [str(algo_id)]
@@ -178,46 +145,25 @@ class InferenceEngine:
             conf = float(model_cfg.get('conf_threshold', getattr(self.config, 'default_conf_threshold', 0.5)))
             device = model_cfg.get('device', 'cpu')
             try:
-                infer_mode = 'track' if tracking_enabled else 'predict'
-                self._trace_infer_stage(stream_key, model_id, 'call_enter', mode=infer_mode, device=device)
-                if tracking_enabled:
-                    res = model.track(
-                        frame,
-                        conf=max(conf, tracking_conf),
-                        device=device,
-                        verbose=False,
-                        persist=tracking_persist,
-                        tracker=tracking_tracker,
-                    )
-                else:
-                    res = model.predict(frame, conf=conf, device=device, verbose=False)
-                self._trace_infer_stage(stream_key, model_id, 'call_return', mode=infer_mode)
+                self._trace_infer_stage(stream_key, model_id, 'call_enter', mode='predict', device=device)
+                res = model.predict(frame, conf=conf, device=device, verbose=False)
+                self._trace_infer_stage(stream_key, model_id, 'call_return', mode='predict')
                 if self._torch is not None and str(device).lower().startswith('cuda'):
-                    self._trace_infer_stage(stream_key, model_id, 'cuda_sync_start', mode=infer_mode)
+                    self._trace_infer_stage(stream_key, model_id, 'cuda_sync_start', mode='predict')
                     self._torch.cuda.synchronize()
-                    self._trace_infer_stage(stream_key, model_id, 'cuda_sync_end', mode=infer_mode)
-                self._trace_infer_stage(stream_key, model_id, 'end', mode=infer_mode)
+                    self._trace_infer_stage(stream_key, model_id, 'cuda_sync_end', mode='predict')
+                self._trace_infer_stage(stream_key, model_id, 'end', mode='predict')
                 results[model_id] = res
             except TypeError:
                 try:
-                    fallback_mode = 'track_fallback' if tracking_enabled else 'predict_fallback'
-                    self._trace_infer_stage(stream_key, model_id, 'fallback_call_enter', mode=fallback_mode, device=device)
-                    if tracking_enabled:
-                        res = model.track(
-                            frame,
-                            conf=max(conf, tracking_conf),
-                            verbose=False,
-                            persist=tracking_persist,
-                            tracker=tracking_tracker,
-                        )
-                    else:
-                        res = model(frame, conf=conf, verbose=False)
-                    self._trace_infer_stage(stream_key, model_id, 'fallback_call_return', mode=fallback_mode)
+                    self._trace_infer_stage(stream_key, model_id, 'fallback_call_enter', mode='predict_fallback', device=device)
+                    res = model(frame, conf=conf, verbose=False)
+                    self._trace_infer_stage(stream_key, model_id, 'fallback_call_return', mode='predict_fallback')
                     if self._torch is not None and str(device).lower().startswith('cuda'):
-                        self._trace_infer_stage(stream_key, model_id, 'fallback_cuda_sync_start', mode=fallback_mode)
+                        self._trace_infer_stage(stream_key, model_id, 'fallback_cuda_sync_start', mode='predict_fallback')
                         self._torch.cuda.synchronize()
-                        self._trace_infer_stage(stream_key, model_id, 'fallback_cuda_sync_end', mode=fallback_mode)
-                    self._trace_infer_stage(stream_key, model_id, 'fallback_end', mode=fallback_mode)
+                        self._trace_infer_stage(stream_key, model_id, 'fallback_cuda_sync_end', mode='predict_fallback')
+                    self._trace_infer_stage(stream_key, model_id, 'fallback_end', mode='predict_fallback')
                     results[model_id] = res
                 except Exception as e:
                     logging.error(f"推理 [{model_id}] 失败: {e}")
@@ -230,32 +176,17 @@ class InferenceEngine:
         if not self._models:
             return {}
 
-        tracking_enabled = bool(getattr(self.config, 'tracking_enabled', False))
         with self._lock:
-            model_store = self._get_models_for_inference(tracking_enabled, stream_key)
-            return self._infer_with_model_store(model_store, frame, algo_id=algo_id, stream_key=stream_key)
+            return self._infer_with_model_store(self._models, frame, algo_id=algo_id, stream_key=stream_key)
 
     def infer_batch(self, tasks: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         if not self._models or not tasks:
             return {}
 
-        tracking_enabled = bool(getattr(self.config, 'tracking_enabled', False))
         outputs: Dict[str, Dict[str, Any]] = {}
 
         with self._lock:
-            if tracking_enabled:
-                for task in tasks:
-                    stream_key = str(task.get('stream_key', '') or '')
-                    model_store = self._get_models_for_inference(True, stream_key)
-                    outputs[stream_key] = self._infer_with_model_store(
-                        model_store,
-                        task.get('frame'),
-                        algo_id=task.get('algo_id'),
-                        stream_key=stream_key,
-                    )
-                return outputs
-
-            model_store = self._get_models_for_inference(False, None)
+            model_store = self._models
             first_algo = tasks[0].get('algo_id')
             if first_algo and str(first_algo) in model_store:
                 model_ids = [str(first_algo)]
@@ -368,13 +299,7 @@ class InferenceEngine:
         return response.get('result', {}) or {}
 
     def reset_stream_tracking(self, stream_key: str):
-        stream_name = str(stream_key or '').strip()
-        if not stream_name:
-            return
-        with self._lock:
-            stream_models = self._tracking_models_by_stream.pop(stream_name, None)
-        if stream_models is not None:
-            logging.info(f"流 [{stream_name}] 跟踪状态已重置")
+        return
 
     def is_loaded(self) -> bool:
         return self._loaded
@@ -396,5 +321,4 @@ class InferenceEngine:
         with self._lock:
             self._models.clear()
             self._model_configs.clear()
-            self._tracking_models_by_stream.clear()
         logging.info("推理引擎已清理")

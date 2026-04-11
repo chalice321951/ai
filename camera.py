@@ -92,6 +92,7 @@ from stream.enhanced_video_processor import (
 from stream.capture_process import CaptureProxy
 from inference.unified_scheduler import UnifiedInferenceScheduler
 from alert.alert_system import AlertSystem, create_count_threshold_rule, AlertLevel
+from tracking.simple_tracker import SimpleTracker
 
 
 def _enable_fault_logging(log_dir: str = 'log'):
@@ -173,6 +174,10 @@ class StreamProcessor:
         self._last_target_seen_ts = 0.0
         self._last_motion_level = 0.0
         self._motion_prev_small: Optional[np.ndarray] = None
+        self._tracker = SimpleTracker(
+            max_missed=max(5, int(getattr(self.config, 'push_fps', self.config.fps) * 2)),
+            min_iou=float(getattr(self.config, 'tracking_match_iou', 0.3) or 0.3),
+        ) if bool(getattr(self.config, 'tracking_enabled', False)) else None
 
         logging.info(f"[{self.name}] StreamProcessor 初始化完成")
 
@@ -267,6 +272,8 @@ class StreamProcessor:
         }
         self._last_infer_frame_id = -1
         self._last_applied_result_frame_id = -1
+        if self._tracker is not None:
+            self._tracker.reset()
         with self._latest_frame_lock:
             self._latest_input_frame = None
         with self._latest_render_lock:
@@ -535,6 +542,8 @@ class StreamProcessor:
             }
             self._last_infer_frame_id = -1
             self._last_applied_result_frame_id = -1
+            if self._tracker is not None:
+                self._tracker.reset()
             with self._latest_frame_lock:
                 self._latest_input_frame = None
             with self._latest_render_lock:
@@ -568,36 +577,37 @@ class StreamProcessor:
             xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else np.asarray(boxes.xyxy)
             confs = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else np.asarray(boxes.conf)
             clss = boxes.cls.cpu().numpy() if hasattr(boxes.cls, 'cpu') else np.asarray(boxes.cls)
-            track_values = None
-            if hasattr(boxes, 'id') and boxes.id is not None:
-                track_values = boxes.id.cpu().numpy() if hasattr(boxes.id, 'cpu') else np.asarray(boxes.id)
             if fid is not None:
                 self._trace_stage(fid, 'tensor_extract_end', algo_id=algo_id, box_count=len(xyxy))
             names = getattr(r, 'names', {})
             color = self._color_for_model(algo_id)
+            raw_detections = []
             for i in range(len(xyxy)):
                 x1, y1, x2, y2 = map(int, xyxy[i])
                 conf = float(confs[i])
                 cls_id = int(clss[i])
                 label = names.get(cls_id, str(cls_id)) if isinstance(names, dict) else str(cls_id)
-                track_id = None
-                if track_values is not None and i < len(track_values):
-                    raw_track_id = track_values[i]
-                    if raw_track_id is not None:
-                        try:
-                            track_id = int(raw_track_id)
-                        except Exception:
-                            track_id = str(raw_track_id)
-                text = f"{algo_id}:{label} {conf:.2f}"
-                if track_id is not None:
-                    text = f"{algo_id}:ID{track_id} {label} {conf:.2f}"
-                overlays.append({
+                raw_detections.append({
                     'xyxy': (x1, y1, x2, y2),
-                    'text': text,
                     'color': color,
                     'class_name': str(label),
                     'algo_id': str(algo_id),
                     'confidence': conf,
+                })
+            assigned_track_ids = [None] * len(raw_detections)
+            if self._tracker is not None and raw_detections:
+                assigned_track_ids = self._tracker.update(raw_detections)
+            for det, track_id in zip(raw_detections, assigned_track_ids):
+                text = f"{algo_id}:{det['class_name']} {det['confidence']:.2f}"
+                if track_id is not None:
+                    text = f"{algo_id}:ID{track_id} {det['class_name']} {det['confidence']:.2f}"
+                overlays.append({
+                    'xyxy': det['xyxy'],
+                    'text': text,
+                    'color': det['color'],
+                    'class_name': det['class_name'],
+                    'algo_id': det['algo_id'],
+                    'confidence': det['confidence'],
                     'track_id': track_id,
                 })
         except Exception as e:
