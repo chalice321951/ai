@@ -217,6 +217,17 @@ class CameraConfig:
         perf = self.config.get('performance', {})
         self.detection_inference_interval = max(1, int(perf.get('detection_inference_interval', 1)))
         self.result_max_back_frames = max(30, int(perf.get('result_max_back_frames', 30)))
+        self.inference_idle_interval = max(
+            self.detection_inference_interval,
+            int(perf.get('inference_idle_interval', max(self.detection_inference_interval * 3, 9))),
+        )
+        self.inference_active_hold_seconds = float(perf.get('inference_active_hold_seconds', 2.0) or 2.0)
+        self.motion_detection_enabled = bool(perf.get('motion_detection_enabled', True))
+        self.motion_threshold = float(perf.get('motion_threshold', 3.5) or 3.5)
+        self.motion_resize_width = max(32, int(perf.get('motion_resize_width', 160) or 160))
+        self.motion_resize_height = max(18, int(perf.get('motion_resize_height', 90) or 90))
+        self.inference_batch_size = max(1, int(perf.get('inference_batch_size', 4) or 4))
+        self.inference_batch_wait_ms = max(0, int(perf.get('inference_batch_wait_ms', 8) or 8))
 
     def _load_alarm_config(self):
         alarm = self.config.get('alarm', {})

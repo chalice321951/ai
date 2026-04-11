@@ -1,14 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Unified multi-stream inference scheduler.
-
-The scheduler keeps only the latest frame per stream, runs inference in a
-shared worker thread, and writes the latest result back to each stream cache.
+Unified multi-stream inference scheduler with micro-batching.
 """
 import logging
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -26,6 +23,8 @@ class UnifiedInferenceScheduler:
         self._stop_event = threading.Event()
         self._states: Dict[str, Dict[str, Any]] = {}
         self._worker_thread: Optional[threading.Thread] = None
+        self._batch_size = max(1, int(getattr(config, 'inference_batch_size', 4) or 4))
+        self._batch_wait_ms = max(0, int(getattr(config, 'inference_batch_wait_ms', 8) or 8))
 
         if self._engine.is_loaded():
             self._worker_thread = threading.Thread(
@@ -34,9 +33,9 @@ class UnifiedInferenceScheduler:
                 name="UnifiedInferenceScheduler",
             )
             self._worker_thread.start()
-            logging.info("统一推理调度器已启动")
+            logging.info("缁熶竴鎺ㄧ悊璋冨害鍣ㄥ凡鍚姩")
         else:
-            logging.warning("统一推理调度器未启动：推理引擎未加载")
+            logging.warning("缁熶竴鎺ㄧ悊璋冨害鍣ㄦ湭鍚姩锛氭帹鐞嗗紩鎿庢湭鍔犺浇")
 
     def is_loaded(self) -> bool:
         return self._engine.is_loaded()
@@ -54,13 +53,14 @@ class UnifiedInferenceScheduler:
             return False
 
         frame_copy = np.ascontiguousarray(frame, dtype=np.uint8)
+        now = time.time()
         with self._lock:
             state = self._states.setdefault(key, self._new_stream_state())
             state["latest_frame"] = frame_copy
             state["latest_frame_id"] = int(frame_id or 0)
             state["algo_id"] = algo_id
             state["submitted_count"] += 1
-            state["last_submit_ts"] = time.time()
+            state["last_submit_ts"] = now
         self._wake_event.set()
         return True
 
@@ -70,28 +70,13 @@ class UnifiedInferenceScheduler:
             return None
         with self._lock:
             state = self._states.get(key)
-            if not state:
-                return None
-            result = state.get("latest_result")
-            if result is None:
+            if not state or state.get("latest_result") is None:
                 return None
             return {
                 "frame_id": state.get("latest_result_frame_id", 0),
-                "results": result,
+                "results": state.get("latest_result") or {},
                 "result_ts": state.get("latest_result_ts", 0.0),
             }
-
-    def clear_stream_result(self, stream_key: str):
-        key = str(stream_key or "").strip()
-        if not key:
-            return
-        with self._lock:
-            state = self._states.get(key)
-            if not state:
-                return
-            state["latest_result"] = None
-            state["latest_result_frame_id"] = 0
-            state["latest_result_ts"] = 0.0
 
     def reset_stream_tracking(self, stream_key: str):
         key = str(stream_key or "").strip()
@@ -137,68 +122,67 @@ class UnifiedInferenceScheduler:
             "last_submit_ts": 0.0,
         }
 
-    def _pick_next_task(self) -> Optional[Dict[str, Any]]:
+    def _pick_batch(self) -> List[Dict[str, Any]]:
+        tasks: List[Dict[str, Any]] = []
         with self._lock:
-            selected_key = None
-            selected_state = None
-            oldest_ts = None
+            candidates = []
             for key, state in self._states.items():
                 if state.get("processing"):
                     continue
                 if state.get("latest_frame") is None:
                     continue
-                state_ts = float(state.get("last_submit_ts", 0.0) or 0.0)
-                if selected_state is None or state_ts < oldest_ts:
-                    selected_key = key
-                    selected_state = state
-                    oldest_ts = state_ts
+                candidates.append((float(state.get("last_submit_ts", 0.0) or 0.0), key, state))
 
-            if selected_state is None:
-                return None
+            candidates.sort(key=lambda item: item[0])
+            for _, key, state in candidates[:self._batch_size]:
+                tasks.append({
+                    "stream_key": key,
+                    "frame": state["latest_frame"],
+                    "frame_id": state["latest_frame_id"],
+                    "algo_id": state.get("algo_id"),
+                })
+                state["latest_frame"] = None
+                state["processing"] = True
+        return tasks
 
-            task = {
-                "stream_key": selected_key,
-                "frame": selected_state["latest_frame"],
-                "frame_id": selected_state["latest_frame_id"],
-                "algo_id": selected_state.get("algo_id"),
-            }
-            selected_state["latest_frame"] = None
-            selected_state["processing"] = True
-            return task
-
-    def _store_result(self, stream_key: str, frame_id: int, results: Dict[str, Any]):
+    def _store_results(self, tasks: List[Dict[str, Any]], outputs: Dict[str, Dict[str, Any]]):
+        now = time.time()
         with self._lock:
-            state = self._states.get(stream_key)
-            if not state:
-                return
-            state["latest_result"] = results or {}
-            state["latest_result_frame_id"] = int(frame_id or 0)
-            state["latest_result_ts"] = time.time()
-            state["processing"] = False
-            state["completed_count"] += 1
-
-    def _mark_failed(self, stream_key: str):
-        with self._lock:
-            state = self._states.get(stream_key)
-            if state:
+            for task in tasks:
+                stream_key = str(task.get("stream_key", "") or "")
+                state = self._states.get(stream_key)
+                if not state:
+                    continue
+                state["latest_result"] = outputs.get(stream_key, {}) or {}
+                state["latest_result_frame_id"] = int(task.get("frame_id", 0) or 0)
+                state["latest_result_ts"] = now
                 state["processing"] = False
+                state["completed_count"] += 1
+
+    def _mark_failed(self, tasks: List[Dict[str, Any]]):
+        with self._lock:
+            for task in tasks:
+                state = self._states.get(str(task.get("stream_key", "") or ""))
+                if state:
+                    state["processing"] = False
 
     def _worker_loop(self):
         while not self._stop_event.is_set():
-            task = self._pick_next_task()
-            if task is None:
+            tasks = self._pick_batch()
+            if not tasks:
                 self._wake_event.wait(0.05)
                 self._wake_event.clear()
                 continue
 
-            stream_key = task["stream_key"]
+            if len(tasks) < self._batch_size and self._batch_wait_ms > 0:
+                time.sleep(self._batch_wait_ms / 1000.0)
+                extra_tasks = self._pick_batch()
+                if extra_tasks:
+                    tasks.extend(extra_tasks[: max(0, self._batch_size - len(tasks))])
+
             try:
-                results = self._engine.infer(
-                    frame=task["frame"],
-                    algo_id=task.get("algo_id"),
-                    stream_key=stream_key,
-                )
-                self._store_result(stream_key, task.get("frame_id", 0), results)
+                outputs = self._engine.infer_batch(tasks)
+                self._store_results(tasks, outputs)
             except Exception as e:
-                logging.error(f"[{stream_key}] 统一推理调度失败: {e}")
-                self._mark_failed(stream_key)
+                logging.error(f"缁熶竴鎺ㄧ悊鎵归噺璋冨害澶辫触: {e}")
+                self._mark_failed(tasks)

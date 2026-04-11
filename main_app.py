@@ -135,6 +135,9 @@ class StreamProcessor:
         self._last_push_ts = 0.0
         self._last_infer_result_ts = 0.0
         self._last_infer_result_count = 0
+        self._last_target_seen_ts = 0.0
+        self._last_motion_level = 0.0
+        self._motion_prev_small: Optional[np.ndarray] = None
 
         logging.info(f"[{self.name}] StreamProcessor 初始化完成")
 
@@ -301,11 +304,41 @@ class StreamProcessor:
             self._process_frame(frame)
         logging.info(f"[{self.name}] 处理线程结束")
 
+    def _estimate_motion_level(self, frame: np.ndarray) -> float:
+        if not bool(getattr(self.config, 'motion_detection_enabled', True)):
+            return 100.0
+        try:
+            width = int(getattr(self.config, 'motion_resize_width', 160))
+            height = int(getattr(self.config, 'motion_resize_height', 90))
+            small = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            if self._motion_prev_small is None:
+                self._motion_prev_small = gray
+                return 100.0
+            diff = cv2.absdiff(gray, self._motion_prev_small)
+            self._motion_prev_small = gray
+            return float(diff.mean())
+        except Exception:
+            return 100.0
+
+    def _current_inference_interval(self, frame: np.ndarray) -> int:
+        base_interval = max(1, int(getattr(self.config, 'detection_inference_interval', 5)))
+        idle_interval = max(base_interval, int(getattr(self.config, 'inference_idle_interval', base_interval)))
+        hold_seconds = float(getattr(self.config, 'inference_active_hold_seconds', 2.0) or 2.0)
+        motion_threshold = float(getattr(self.config, 'motion_threshold', 3.5) or 3.5)
+
+        motion_level = self._estimate_motion_level(frame)
+        self._last_motion_level = motion_level
+        active_recently = self._last_target_seen_ts > 0 and (time.time() - self._last_target_seen_ts) <= hold_seconds
+        if active_recently or motion_level >= motion_threshold:
+            return base_interval
+        return idle_interval
+
     def _process_frame(self, frame: np.ndarray):
         try:
             self._frame_id += 1
             fid = self._frame_id
-            interval = max(1, int(getattr(self.config, 'detection_inference_interval', 5)))
+            interval = self._current_inference_interval(frame)
 
             latest_result = self.inference_scheduler.get_latest_result(self.stream_tracking_key)
             if latest_result:
@@ -320,7 +353,7 @@ class StreamProcessor:
             # 异步推理：先取上一次结果（非阻塞），再发新请求
             if self.inference_scheduler.is_loaded() and (fid - self._last_infer_frame_id) >= interval:
                 # 取上一次异步推理结果
-                if getattr(self, '_pending_infer', False):
+                if False and getattr(self, '_pending_infer', False):
                     try:
                         results = self._collect_async_result()
                         if results:
@@ -330,7 +363,7 @@ class StreamProcessor:
 
                 # 发新的异步推理请求
                 self._last_infer_frame_id = fid
-                self.inference_scheduler.submit_frame(
+                self._pending_infer = self.inference_scheduler.submit_frame(
                     stream_key=self.stream_tracking_key,
                     frame=frame,
                     algo_id=None,
@@ -360,10 +393,9 @@ class StreamProcessor:
             self._last_processed_ts = time.time()
 
             if self.alert_system.alert_handler:
-                alert_frame = rendered_frame.copy()
-                self.alert_system.alert_handler.collect_clip_frame(alert_frame)
+                self.alert_system.alert_handler.collect_clip_frame(rendered_frame)
                 if detection_dict and alert_target_info:
-                    self.alert_system.process_frame_alerts(alert_frame, detection_dict, target_info=alert_target_info)
+                    self.alert_system.process_frame_alerts(rendered_frame, detection_dict, target_info=alert_target_info)
 
         except Exception as e:
             logging.error(f"[{self.name}] 帧处理异常: {e}")
@@ -432,6 +464,7 @@ class StreamProcessor:
         tracking_enabled = bool(getattr(self.config, 'tracking_enabled', False))
         alarm_count = len(track_ids) if tracking_enabled and track_ids else total
         if alarm_count > 0:
+            self._last_target_seen_ts = time.time()
             logging.info(f"[{self.name}] 检测到目标: alarm_count={alarm_count}, track_ids={sorted(track_ids, key=lambda x: str(x))}, classes={sorted(class_names)}")
         self._last_infer_result_ts = time.time()
         self._last_infer_result_count = int(alarm_count)
