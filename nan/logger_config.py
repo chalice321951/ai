@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 import logging
 import os
+import sys
 from logging.handlers import TimedRotatingFileHandler
 
 
 def setup_logging(log_dir='log', log_level=logging.INFO):
-    """配置日志系统"""
+    """配置日志系统。"""
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, 'ai_camera.log')
 
@@ -20,12 +21,10 @@ def setup_logging(log_dir='log', log_level=logging.INFO):
     if root_logger.handlers:
         return
 
-    # 控制台输出
-    console_handler = logging.StreamHandler()
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
     console_handler.setLevel(log_level)
 
-    # 文件输出（按天切分，保留30天）
     file_handler = TimedRotatingFileHandler(
         log_file,
         when='midnight',

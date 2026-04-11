@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 AI摄像头流检测主程序
@@ -26,6 +26,41 @@ import numpy as np
 _nvenc_lock = threading.Lock()
 _nvenc_count = 0
 _NVENC_MAX_SESSIONS = 5  # 消费级GPU一般限制5~8，保守取5
+
+def _terminate_subprocess(proc: Optional[subprocess.Popen], timeout: float = 3.0):
+    if proc is None:
+        return
+
+    try:
+        if proc.stdin and not proc.stdin.closed:
+            proc.stdin.close()
+    except Exception:
+        pass
+
+    try:
+        if os.name != 'nt':
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        else:
+            proc.terminate()
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            if os.name != 'nt':
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            else:
+                proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=2.0)
+        except Exception:
+            pass
+    except Exception:
+        try:
+            proc.kill()
+            proc.wait(timeout=2.0)
+        except Exception:
+            pass
 
 def _nvenc_acquire() -> bool:
     """尝试获取一个 NVENC 会话槽位，成功返回 True"""
@@ -663,7 +698,14 @@ class StreamProcessor:
             cmd = _build_cmd(try_codec, try_hw)
             logging.info(f"[{self.name}] FFmpeg命令(尝试{attempt + 1}, codec={try_codec}): {' '.join(cmd)}")
             try:
-                pipe = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=0)
+                pipe = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    bufsize=0,
+                    start_new_session=(os.name != 'nt'),
+                )
             except Exception as e:
                 logging.error(f"[{self.name}] 启动FFmpeg失败: {e}")
                 if try_hw and self._using_nvenc:
@@ -734,13 +776,7 @@ class StreamProcessor:
     def _close_ffmpeg(self, release_nvenc: bool = False):
         if self.pipe:
             try:
-                if self.pipe.stdin and not self.pipe.stdin.closed:
-                    self.pipe.stdin.close()
-                self.pipe.terminate()
-                self.pipe.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.pipe.kill()
-                self.pipe.wait()
+                _terminate_subprocess(self.pipe, timeout=3.0)
             except Exception:
                 pass
             self.pipe = None
@@ -1081,3 +1117,4 @@ if __name__ == '__main__':
     multiprocessing.set_start_method('forkserver', force=True)
     atexit.register(_kill_child_processes)
     sys.exit(main())
+

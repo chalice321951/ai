@@ -5,6 +5,7 @@
 import cv2
 import logging
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -278,6 +279,14 @@ class AlertHandler:
 
     def _write_video(self, frames: List[np.ndarray], output_path: str) -> bool:
         if not frames:
+            try:
+                if 'pipe' in locals() and pipe is not None and pipe.poll() is None:
+                    if os.name != 'nt':
+                        os.killpg(os.getpgid(pipe.pid), signal.SIGKILL)
+                    else:
+                        pipe.kill()
+            except Exception:
+                pass
             return False
         try:
             h, w = frames[0].shape[:2]
@@ -296,8 +305,13 @@ class AlertHandler:
                 '-movflags', '+faststart',
                 output_path
             ]
-            pipe = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL, bufsize=0)
+            pipe = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=0,
+                start_new_session=(os.name != 'nt'),
+            )
             for f in frames:
                 f = np.ascontiguousarray(f, dtype=np.uint8)
                 pipe.stdin.write(f.tobytes())

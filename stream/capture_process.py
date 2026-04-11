@@ -10,6 +10,7 @@ import logging
 import multiprocessing
 import multiprocessing.shared_memory as shm_mod
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -171,11 +172,17 @@ def _capture_worker(
         except Exception:
             pass
         try:
-            proc.terminate()
+            if os.name != 'nt':
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            else:
+                proc.terminate()
             proc.wait(timeout=3.0)
         except Exception:
             try:
-                proc.kill()
+                if os.name != 'nt':
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                else:
+                    proc.kill()
                 proc.wait(timeout=2.0)
             except Exception:
                 pass
@@ -254,6 +261,7 @@ def _capture_worker(
                     stderr=subprocess.PIPE,
                     stdin=subprocess.DEVNULL,
                     bufsize=0,
+                    start_new_session=(os.name != 'nt'),
                 )
                 ffmpeg_state['proc'] = proc
             except Exception as e:

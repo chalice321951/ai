@@ -25,6 +25,7 @@ class InferenceEngine:
         self._loaded = False
         self._torch = None
         self._yolo_class = None
+        self._trace_enabled = bool(getattr(self.config, 'crash_trace_enabled', False))
 
         self._single_thread_worker_enabled = bool(getattr(self.config, 'inference_single_thread_worker', False))
         self._submit_timeout = float(getattr(self.config, 'inference_submit_timeout', 30.0) or 30.0)
@@ -148,6 +149,8 @@ class InferenceEngine:
         return self._models
 
     def _trace_infer_stage(self, stream_key: Optional[str], model_id: str, stage: str, **kwargs):
+        if not self._trace_enabled:
+            return
         extras = []
         if stream_key:
             extras.append(f"stream={stream_key}")
@@ -156,11 +159,6 @@ class InferenceEngine:
         for key, value in kwargs.items():
             extras.append(f"{key}={value}")
         logging.info("[InferTrace] " + ' '.join(extras))
-        for handler in logging.getLogger().handlers:
-            try:
-                handler.flush()
-            except Exception:
-                pass
 
     def _infer_with_model_store(self, model_store: Dict[str, Any], frame, algo_id: str = None, stream_key: str = None) -> Dict[str, Any]:
         results: Dict[str, Any] = {}
