@@ -1102,6 +1102,10 @@ def _kill_child_processes():
                 child.kill()
             except Exception:
                 pass
+        try:
+            psutil.wait_procs(children, timeout=3.0)
+        except Exception:
+            pass
     except ImportError:
         # psutil 不可用时用 os.killpg 兜底
         try:

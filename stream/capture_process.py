@@ -10,6 +10,7 @@ import logging
 import multiprocessing
 import multiprocessing.shared_memory as shm_mod
 import os
+import psutil
 import signal
 import subprocess
 import threading
@@ -508,10 +509,15 @@ class CaptureProxy:
                 self._ctrl_conn.send({'cmd': _CMD_STOP})
             except Exception:
                 pass
-            self._process.join(timeout=5.0)
+            self._process.join(timeout=8.0)
             if self._process.is_alive():
+                self._kill_process_descendants()
                 self._process.terminate()
                 self._process.join(timeout=3.0)
+            if self._process.is_alive():
+                self._kill_process_descendants()
+                self._process.kill()
+                self._process.join(timeout=2.0)
             logging.info(f"[{self._stream_id}] 拉流子进程已停止")
 
         self._process = None
@@ -532,3 +538,17 @@ class CaptureProxy:
                 pass
             self._shm_cache = None
             self._shm_cache_name = None
+
+    def _kill_process_descendants(self):
+        if self._process is None:
+            return
+        try:
+            parent = psutil.Process(self._process.pid)
+        except Exception:
+            return
+
+        for child in parent.children(recursive=True):
+            try:
+                child.kill()
+            except Exception:
+                pass
