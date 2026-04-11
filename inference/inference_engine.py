@@ -38,7 +38,7 @@ class InferenceEngine:
 
     def _start_worker_if_needed(self):
         if not self._single_thread_worker_enabled:
-            logging.info("鎺ㄧ悊涓茶worker宸茬鐢紝娌跨敤璋冪敤绾跨▼鐩存帴鎺ㄧ悊")
+            logging.info("推理串行 worker 已禁用，调用线程将直接执行推理")
             return
         if not self._loaded:
             return
@@ -51,7 +51,7 @@ class InferenceEngine:
             name="InferenceWorker",
         )
         self._worker_thread.start()
-        logging.info("鎺ㄧ悊涓茶worker宸插惎鍔紝鐢ㄤ簬涓茶鍖朰OLO/Torch/CUDA璋冪敤")
+        logging.info("推理串行 worker 已启动，用于串行化 YOLO/Torch/CUDA 调用")
 
     def _resolve_device(self, device_value: Optional[str]) -> str:
         requested = str(device_value or getattr(self.config, 'model_device', 'auto')).strip().lower()
@@ -72,7 +72,7 @@ class InferenceEngine:
         if self._yolo_class is None:
             from ultralytics import YOLO
             self._yolo_class = YOLO
-        logging.info(f"鍒涘缓YOLO妯″瀷瀹炰緥 device={runtime_device}: {model_path}")
+        logging.info(f"创建 YOLO 模型实例 device={runtime_device}: {model_path}")
         return self._yolo_class(model_path)
 
     def _load_models(self):
@@ -86,15 +86,15 @@ class InferenceEngine:
                 model_id = str(model_cfg.get('id', 'unknown'))
                 model_path = str(model_cfg.get('path', ''))
                 if not model_path:
-                    logging.warning(f"妯″瀷璺緞涓虹┖锛岃烦杩? [{model_id}]")
+                    logging.warning(f"模型路径为空，跳过 [{model_id}]")
                     continue
                 if not os.path.exists(model_path):
-                    logging.warning(f"妯″瀷鏂囦欢涓嶅瓨鍦紝璺宠繃: [{model_id}] {model_path}")
+                    logging.warning(f"模型文件不存在，跳过: [{model_id}] {model_path}")
                     continue
 
                 runtime_device = self._resolve_device(model_cfg.get('device'))
                 try:
-                    logging.info(f"鍔犺浇妫€娴嬫ā鍨?[{model_id}] device={runtime_device}: {model_path}")
+                    logging.info(f"加载检测模型[{model_id}] device={runtime_device}: {model_path}")
                     model = self._create_model_instance(model_path, runtime_device)
                     self._models[model_id] = model
                     self._model_configs[model_id] = {
@@ -105,19 +105,19 @@ class InferenceEngine:
                         'conf_threshold': float(model_cfg.get('conf_threshold', getattr(self.config, 'default_conf_threshold', 0.5))),
                         'device': runtime_device,
                     }
-                    logging.info(f"妯″瀷 [{model_id}] 鍔犺浇鎴愬姛")
+                    logging.info(f"模型 [{model_id}] 加载成功")
                 except Exception as e:
-                    logging.error(f"妯″瀷 [{model_id}] 鍔犺浇澶辫触: {e}")
+                    logging.error(f"模型 [{model_id}] 加载失败: {e}")
 
             if self._models:
                 self._loaded = True
-                logging.info(f"鍏卞姞杞?{len(self._models)} 涓ā鍨? {list(self._models.keys())}")
+                logging.info(f"共加载 {len(self._models)} 个模型: {list(self._models.keys())}")
             else:
-                logging.warning("鏈姞杞戒换浣曟ā鍨嬶紝灏嗕互閫忎紶妯″紡杩愯锛堜粎鎺ㄦ祦锛屼笉妫€娴嬶級")
+                logging.warning("未加载任何模型，将以透传模式运行，仅推流不检测")
         except ImportError:
-            logging.error("ultralytics 鏈畨瑁咃紝鏃犳硶鍔犺浇YOLO妯″瀷")
+            logging.error("ultralytics 未安装，无法加载 YOLO 模型")
         except Exception as e:
-            logging.error(f"鍔犺浇妯″瀷澶辫触: {e}")
+            logging.error(f"加载模型失败: {e}")
 
     def _get_models_for_inference(self, tracking_enabled: bool, stream_key: Optional[str]) -> Dict[str, Any]:
         if not tracking_enabled:
@@ -139,11 +139,11 @@ class InferenceEngine:
             try:
                 stream_models[model_id] = self._create_model_instance(model_path, model_cfg.get('device', 'cpu'))
             except Exception as e:
-                logging.error(f"涓烘祦 [{stream_name}] 鍒涘缓璺熻釜妯″瀷 [{model_id}] 澶辫触: {e}")
+                logging.error(f"为流 [{stream_name}] 创建跟踪模型 [{model_id}] 失败: {e}")
 
         if stream_models:
             self._tracking_models_by_stream[stream_name] = stream_models
-            logging.info(f"娴?[{stream_name}] 宸插垱寤虹嫭绔嬭窡韪櫒鐘舵€侊紝妯″瀷鏁?{len(stream_models)}")
+            logging.info(f"流 [{stream_name}] 已创建独立跟踪状态，模型数={len(stream_models)}")
             return stream_models
 
         return self._models
@@ -220,9 +220,9 @@ class InferenceEngine:
                     self._trace_infer_stage(stream_key, model_id, 'fallback_end', mode=fallback_mode)
                     results[model_id] = res
                 except Exception as e:
-                    logging.error(f"鎺ㄧ悊 [{model_id}] 澶辫触: {e}")
+                    logging.error(f"推理 [{model_id}] 失败: {e}")
             except Exception as e:
-                logging.error(f"鎺ㄧ悊 [{model_id}] 澶辫触: {e}")
+                logging.error(f"推理 [{model_id}] 失败: {e}")
 
         return results
 
@@ -282,10 +282,10 @@ class InferenceEngine:
                     try:
                         res_batch = model(frames, conf=conf, verbose=False)
                     except Exception as e:
-                        logging.error(f"鎵归噺鎺ㄧ悊 [{model_id}] 澶辫触: {e}")
+                        logging.error(f"批量推理 [{model_id}] 失败: {e}")
                         continue
                 except Exception as e:
-                    logging.error(f"鎵归噺鎺ㄧ悊 [{model_id}] 澶辫触: {e}")
+                    logging.error(f"批量推理 [{model_id}] 失败: {e}")
                     continue
 
                 if not isinstance(res_batch, (list, tuple)):
@@ -321,7 +321,7 @@ class InferenceEngine:
                 if response_queue is not None:
                     response_queue.put({'ok': True, 'result': result})
             except Exception as e:
-                logging.error(f"涓茶鎺ㄧ悊worker鎵ц澶辫触: {e}")
+                logging.error(f"串行推理 worker 执行失败: {e}")
                 if response_queue is not None:
                     response_queue.put({'ok': False, 'error': e})
             finally:
@@ -337,7 +337,7 @@ class InferenceEngine:
         if self._worker_thread is None or not self._worker_thread.is_alive():
             self._start_worker_if_needed()
             if self._worker_thread is None or not self._worker_thread.is_alive():
-                logging.error("鎺ㄧ悊涓茶worker鏈惎鍔紝鍥為€€鐩存帴鎺ㄧ悊")
+                logging.error("推理串行 worker 未启动，回退到直接推理")
                 return self._run_inference_internal(frame=frame, algo_id=algo_id, stream_key=stream_key)
 
         response_queue: "queue.Queue" = queue.Queue(maxsize=1)
@@ -353,17 +353,17 @@ class InferenceEngine:
             self._trace_infer_stage(stream_key, model_label, 'worker_enqueue')
             self._worker_queue.put(task, timeout=max(1.0, self._submit_timeout))
         except queue.Full:
-            logging.error("鎺ㄧ悊浠诲姟鎻愪氦瓒呮椂锛寃orker闃熷垪宸叉弧")
+            logging.error("推理任务提交超时，worker 队列已满")
             return {}
 
         try:
             response = response_queue.get(timeout=max(1.0, self._submit_timeout))
         except queue.Empty:
-            logging.error("鎺ㄧ悊浠诲姟绛夊緟缁撴灉瓒呮椂锛屽洖閫€绌虹粨鏋?")
+            logging.error("等待推理结果超时，返回空结果")
             return {}
 
         if not response.get('ok', False):
-            logging.error(f"涓茶鎺ㄧ悊worker杩斿洖澶辫触: {response.get('error')}")
+            logging.error(f"串行推理 worker 返回失败: {response.get('error')}")
             return {}
         return response.get('result', {}) or {}
 
@@ -374,7 +374,7 @@ class InferenceEngine:
         with self._lock:
             stream_models = self._tracking_models_by_stream.pop(stream_name, None)
         if stream_models is not None:
-            logging.info(f"娴?[{stream_name}] 璺熻釜鐘舵€佸凡閲嶇疆")
+            logging.info(f"流 [{stream_name}] 跟踪状态已重置")
 
     def is_loaded(self) -> bool:
         return self._loaded
@@ -397,4 +397,4 @@ class InferenceEngine:
             self._models.clear()
             self._model_configs.clear()
             self._tracking_models_by_stream.clear()
-        logging.info("鎺ㄧ悊寮曟搸宸叉竻鐞?")
+        logging.info("推理引擎已清理")

@@ -615,8 +615,7 @@ class StreamProcessor:
             cv2.putText(frame, badge_text, (x1 + 12, y1 + text_h + 8), font, font_scale, (255, 255, 255), thickness)
             cv2.putText(frame, ts_text, (x1 + 12, y2 - ts_baseline - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
         except Exception as e:
-            logging.debug(f"[{self.name}] ??AI????: {e}")
-        return frame
+            logging.debug(f"[{self.name}] 绘制AI标识异常: {e}")
         return frame
 
     def _draw_detection_overlays(self, frame: np.ndarray, overlays) -> np.ndarray:

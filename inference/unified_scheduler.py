@@ -33,9 +33,9 @@ class UnifiedInferenceScheduler:
                 name="UnifiedInferenceScheduler",
             )
             self._worker_thread.start()
-            logging.info("缁熶竴鎺ㄧ悊璋冨害鍣ㄥ凡鍚姩")
+            logging.info("统一推理调度器已启动")
         else:
-            logging.warning("缁熶竴鎺ㄧ悊璋冨害鍣ㄦ湭鍚姩锛氭帹鐞嗗紩鎿庢湭鍔犺浇")
+            logging.warning("统一推理调度器未启动：推理引擎未加载")
 
     def is_loaded(self) -> bool:
         return self._engine.is_loaded()
@@ -184,5 +184,5 @@ class UnifiedInferenceScheduler:
                 outputs = self._engine.infer_batch(tasks)
                 self._store_results(tasks, outputs)
             except Exception as e:
-                logging.error(f"缁熶竴鎺ㄧ悊鎵归噺璋冨害澶辫触: {e}")
+                logging.error(f"统一推理批量调度失败: {e}")
                 self._mark_failed(tasks)
