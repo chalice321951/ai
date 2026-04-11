@@ -55,8 +55,7 @@ from stream.enhanced_video_processor import (
     VideoStreamStatus,
 )
 from stream.capture_process import CaptureProxy
-from inference.inference_engine import InferenceEngine
-from inference.inference_process import InferenceProxy
+from inference.unified_scheduler import UnifiedInferenceScheduler
 from alert.alert_system import AlertSystem, create_count_threshold_rule, AlertLevel
 
 
@@ -76,12 +75,12 @@ def _enable_fault_logging(log_dir: str = 'log'):
 class StreamProcessor:
     """单路输入流：拉流 → 推理 → 绘框 → 输出推流 → 告警"""
 
-    def __init__(self, stream_cfg: dict, config: CameraConfig,
-                 inference_engine, owns_inference_engine: bool = False):
+    def __init__(self, stream_cfg: dict, config: CameraConfig, inference_scheduler):
         self.stream_cfg = stream_cfg
         self.config = config
-        self.inference_engine = inference_engine
-        self._owns_inference_engine = owns_inference_engine
+        self.inference_scheduler = inference_scheduler
+        self.inference_engine = inference_scheduler
+        self._owns_inference_engine = False
 
         self.name = stream_cfg.get('name', 'unknown')
         self.input_url = stream_cfg.get('input_url') or stream_cfg.get('rtsp_url') or stream_cfg.get('rtmp_url', '')
@@ -116,6 +115,7 @@ class StreamProcessor:
 
         self._frame_id = 0
         self._last_infer_frame_id = -1
+        self._last_applied_result_frame_id = -1
         self._pending_infer = False
         self._crash_trace_enabled = bool(getattr(self.config, 'crash_trace_enabled', False))
         self._last_detection_overlays = []
@@ -169,6 +169,7 @@ class StreamProcessor:
     def start(self):
         self.is_running = True
         self._stop_event.clear()
+        self.inference_scheduler.ensure_stream(self.stream_tracking_key)
 
         try:
             w, h = self.config.auto_detect_and_update_resolution(self.input_url)
@@ -221,7 +222,7 @@ class StreamProcessor:
             self.video_processor.stop()
             self.video_processor = None
 
-        self.inference_engine.reset_stream_tracking(self.stream_tracking_key)
+        self.inference_scheduler.reset_stream_tracking(self.stream_tracking_key)
         self._last_detection_overlays = []
         self._last_tracking_summary = {
             'track_count': 0,
@@ -229,12 +230,13 @@ class StreamProcessor:
             'classes': [],
         }
         self._last_infer_frame_id = -1
-        self._pending_infer = False
+        self._last_applied_result_frame_id = -1
         with self._latest_frame_lock:
             self._latest_input_frame = None
         with self._latest_render_lock:
             self._latest_rendered_frame = None
 
+        self.inference_scheduler.remove_stream(self.stream_tracking_key)
         self._close_ffmpeg(release_nvenc=True)
         if self._owns_inference_engine:
             try:
@@ -305,11 +307,18 @@ class StreamProcessor:
             fid = self._frame_id
             interval = max(1, int(getattr(self.config, 'detection_inference_interval', 5)))
 
+            latest_result = self.inference_scheduler.get_latest_result(self.stream_tracking_key)
+            if latest_result:
+                result_fid = int(latest_result.get('frame_id', 0) or 0)
+                if result_fid > self._last_applied_result_frame_id:
+                    self._process_infer_results(latest_result.get('results', {}) or {}, result_fid)
+                    self._last_applied_result_frame_id = result_fid
+
             rendered_frame = frame.copy()
             detection_dict = {}
 
             # 异步推理：先取上一次结果（非阻塞），再发新请求
-            if self.inference_engine.is_loaded() and (fid - self._last_infer_frame_id) >= interval:
+            if self.inference_scheduler.is_loaded() and (fid - self._last_infer_frame_id) >= interval:
                 # 取上一次异步推理结果
                 if getattr(self, '_pending_infer', False):
                     try:
@@ -321,7 +330,12 @@ class StreamProcessor:
 
                 # 发新的异步推理请求
                 self._last_infer_frame_id = fid
-                self._submit_async_infer(frame)
+                self.inference_scheduler.submit_frame(
+                    stream_key=self.stream_tracking_key,
+                    frame=frame,
+                    algo_id=None,
+                    frame_id=fid,
+                )
 
             if self._last_detection_overlays:
                 rendered_frame = self._draw_detection_overlays(rendered_frame, self._last_detection_overlays)
@@ -432,7 +446,7 @@ class StreamProcessor:
         self._last_capture_status = status.value
         logging.info(f"[{self.name}] 流状态: {status.value}")
         if status == VideoStreamStatus.INTERRUPTED:
-            self.inference_engine.reset_stream_tracking(self.stream_tracking_key)
+            self.inference_scheduler.reset_stream_tracking(self.stream_tracking_key)
             self._last_detection_overlays = []
             self._last_tracking_summary = {
                 'track_count': 0,
@@ -440,7 +454,7 @@ class StreamProcessor:
                 'classes': [],
             }
             self._last_infer_frame_id = -1
-            self._pending_infer = False
+            self._last_applied_result_frame_id = -1
             with self._latest_frame_lock:
                 self._latest_input_frame = None
             with self._latest_render_lock:
@@ -883,6 +897,7 @@ class CameraStreamManager:
 
     def __init__(self, config: CameraConfig):
         self.config = config
+        self.inference_scheduler = UnifiedInferenceScheduler(config)
         self._processors: Dict[str, StreamProcessor] = {}
         self._threads: Dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
@@ -901,8 +916,7 @@ class CameraStreamManager:
             if name in self._processors:
                 logging.warning(f"流 [{name}] 已在运行")
                 return
-            inference_proxy = InferenceProxy(name, self.config)
-            proc = StreamProcessor(scfg, self.config, inference_proxy, owns_inference_engine=True)
+            proc = StreamProcessor(scfg, self.config, self.inference_scheduler)
             self._processors[name] = proc
 
         t = threading.Thread(target=self._run_stream, args=(name, proc), daemon=True, name=f"Stream-{name}")
@@ -941,6 +955,7 @@ class CameraStreamManager:
             threads = list(self._threads.values())
         for t in threads:
             t.join(timeout=10.0)
+        self.inference_scheduler.cleanup()
         logging.info("所有流已停止")
 
     def get_active_count(self) -> int:
