@@ -13,7 +13,9 @@
   "tracking": {
     "persist": true,
     "tracker": "bytetrack.yaml",
-    "conf_threshold": 0.3
+    "conf_threshold": 0.3,
+    "match_iou": 0.3,
+    "max_predict_gap_ms": 200
   },
   "models": {
     "default_conf_threshold": 0.7,
@@ -162,7 +164,9 @@
   },
   "performance": {
     "detection_inference_interval": 3,
-    "result_max_back_frames": 30
+    "result_max_back_frames": 30,
+    "max_infer_result_age": 1.0,
+    "max_infer_frame_lag": 5
   },
   "alarm": {
     "target_threshold": 1,

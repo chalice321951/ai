@@ -140,6 +140,8 @@ class CameraConfig:
         self.tracking_persist = bool(tracker_cfg.get('persist', True))
         self.tracking_tracker = str(tracker_cfg.get('tracker', 'bytetrack.yaml') or 'bytetrack.yaml')
         self.tracking_conf_threshold = float(tracker_cfg.get('conf_threshold', algo.get('tracking_conf_threshold', 0.3) or 0.3))
+        self.tracking_match_iou = float(tracker_cfg.get('match_iou', 0.3) or 0.3)
+        self.max_predict_gap_ms = float(tracker_cfg.get('max_predict_gap_ms', 200.0) or 200.0)
 
     def _load_inference_config(self):
         inference = self.config.get('inference', {})
@@ -228,6 +230,8 @@ class CameraConfig:
         self.motion_resize_height = max(18, int(perf.get('motion_resize_height', 90) or 90))
         self.inference_batch_size = max(1, int(perf.get('inference_batch_size', 4) or 4))
         self.inference_batch_wait_ms = max(0, int(perf.get('inference_batch_wait_ms', 8) or 8))
+        self.max_infer_result_age = float(perf.get('max_infer_result_age', 1.0) or 1.0)
+        self.max_infer_frame_lag = max(1, int(perf.get('max_infer_frame_lag', 5) or 5))
 
     def _load_alarm_config(self):
         alarm = self.config.get('alarm', {})

@@ -186,6 +186,7 @@ class StreamProcessor:
         self._tracker = SimpleTracker(
             max_missed=max(5, int(getattr(self.config, 'push_fps', self.config.fps) * 2)),
             min_iou=float(getattr(self.config, 'tracking_match_iou', 0.3) or 0.3),
+            max_predict_gap_ms=float(getattr(self.config, 'max_predict_gap_ms', 200.0) or 200.0),
         ) if bool(getattr(self.config, 'tracking_enabled', False)) else None
 
         logging.info(f"[{self.name}] StreamProcessor 初始化完成")
@@ -427,24 +428,23 @@ class StreamProcessor:
             latest_result = self.inference_scheduler.get_latest_result(self.stream_tracking_key)
             if latest_result:
                 result_fid = int(latest_result.get('frame_id', 0) or 0)
-                if result_fid > self._last_applied_result_frame_id:
+                result_ts = float(latest_result.get('result_ts', 0.0) or 0.0)
+                result_age = time.time() - result_ts if result_ts > 0 else 0.0
+                frame_lag = max(0, fid - result_fid)
+                max_result_age = float(getattr(self.config, 'max_infer_result_age', 1.0) or 1.0)
+                max_frame_lag = max(1, int(getattr(self.config, 'max_infer_frame_lag', 5) or 5))
+                if (
+                    result_fid > self._last_applied_result_frame_id
+                    and result_age <= max_result_age
+                    and frame_lag <= max_frame_lag
+                ):
                     self._process_infer_results(latest_result.get('results', {}) or {}, result_fid)
                     self._last_applied_result_frame_id = result_fid
 
             detection_dict = {}
 
-            # 异步推理：先取上一次结果（非阻塞），再发新请求
+            # 异步推理：提交新请求
             if self.inference_scheduler.is_loaded() and (fid - self._last_infer_frame_id) >= interval:
-                # 取上一次异步推理结果
-                if False and getattr(self, '_pending_infer', False):
-                    try:
-                        results = self._collect_async_result()
-                        if results:
-                            self._process_infer_results(results, fid)
-                    except Exception:
-                        pass
-
-                # 发新的异步推理请求
                 self._last_infer_frame_id = fid
                 self._pending_infer = self.inference_scheduler.submit_frame(
                     stream_key=self.stream_tracking_key,
@@ -482,46 +482,6 @@ class StreamProcessor:
 
         except Exception as e:
             logging.error(f"[{self.name}] 帧处理异常: {e}")
-
-    def _submit_async_infer(self, frame: np.ndarray):
-        """异步提交推理请求，不等待结果"""
-        try:
-            proxy = self.inference_engine
-            if not proxy.is_loaded():
-                self._pending_infer = False
-                return
-            frame_c = np.ascontiguousarray(frame, dtype=np.uint8)
-            if not proxy._ensure_shm(frame_c):
-                self._pending_infer = False
-                return
-            dst = np.ndarray(frame_c.shape, dtype=frame_c.dtype, buffer=proxy._shm.buf)
-            np.copyto(dst, frame_c)
-            proxy._seq += 1
-            proxy._req_conn.send({
-                'cmd': 'infer',
-                'shm_name': proxy._shm.name,
-                'shape': frame_c.shape,
-                'dtype': str(frame_c.dtype),
-                'algo_id': None,
-                'seq': proxy._seq,
-            })
-            self._pending_infer = True
-        except Exception as e:
-            logging.debug(f"[{self.name}] 异步推理提交失败: {e}")
-            self._pending_infer = False
-
-    def _collect_async_result(self):
-        """非阻塞取推理结果"""
-        proxy = self.inference_engine
-        try:
-            if proxy._res_conn.poll(0):
-                resp = proxy._res_conn.recv()
-                self._pending_infer = False
-                if resp.get('status') == 'ok':
-                    return resp.get('results', {}) or {}
-        except Exception:
-            self._pending_infer = False
-        return None
 
     def _process_infer_results(self, results, fid):
         """处理推理结果，更新检测覆盖层"""

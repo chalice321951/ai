@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import threading
+import time
 from typing import Dict, List, Optional, Tuple
 
 import cv2
@@ -43,12 +44,14 @@ class _Track:
 class SimpleTracker:
     """Per-stream lightweight IoU tracker used after shared detection inference."""
 
-    def __init__(self, max_missed: int = 20, min_iou: float = 0.3):
+    def __init__(self, max_missed: int = 20, min_iou: float = 0.3, max_predict_gap_ms: float = 200.0):
         self.max_missed = max(1, int(max_missed or 20))
         self.min_iou = float(min_iou or 0.3)
+        self.max_predict_gap = max(0.05, float(max_predict_gap_ms or 200.0) / 1000.0)
         self._next_id = 1
         self._tracks: Dict[int, _Track] = {}
         self._prev_gray: Optional[np.ndarray] = None
+        self._prev_ts: float = 0.0  # 上一帧时间戳
         self._lock = threading.Lock()
 
     def reset(self):
@@ -56,6 +59,7 @@ class SimpleTracker:
             self._next_id = 1
             self._tracks.clear()
             self._prev_gray = None
+            self._prev_ts = 0.0
 
     def set_reference_frame(self, frame: Optional[np.ndarray]):
         with self._lock:
@@ -66,11 +70,21 @@ class SimpleTracker:
 
     def predict(self, frame: Optional[np.ndarray]):
         with self._lock:
+            now = time.monotonic()
             gray = self._to_gray(frame)
             if gray is None:
                 return
             if self._prev_gray is None:
                 self._prev_gray = gray
+                self._prev_ts = now
+                return
+
+            gap = now - self._prev_ts if self._prev_ts > 0 else 0.0
+
+            # 帧间隔过大（卡顿/丢帧），光流不可靠，跳过预测只更新参考帧
+            if gap > self.max_predict_gap:
+                self._prev_gray = gray
+                self._prev_ts = now
                 return
 
             height, width = gray.shape[:2]
@@ -86,6 +100,7 @@ class SimpleTracker:
                 self._tracks.pop(track_id, None)
 
             self._prev_gray = gray
+            self._prev_ts = now
 
     def update(self, detections: List[dict], frame: Optional[np.ndarray] = None) -> List[Optional[int]]:
         with self._lock:
