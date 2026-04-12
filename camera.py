@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Dict, Optional
 from urllib.parse import urlparse
@@ -164,6 +165,14 @@ class StreamProcessor:
         self._latest_rendered_frame: Optional[np.ndarray] = None
         self._latest_frame_lock = threading.Lock()
         self._latest_render_lock = threading.Lock()
+        self._render_queue = deque(maxlen=max(16, int(getattr(self.config, 'result_max_back_frames', 30) or 30)))
+        self._render_queue_lock = threading.Lock()
+        self._frame_buffer = deque(maxlen=max(8, int(getattr(self.config, 'result_max_back_frames', 30) or 30)))
+        self._result_overlays_by_frame: Dict[int, list] = {}
+        self._output_delay_frames = max(
+            0,
+            int(getattr(self.config, 'output_delay_frames', 0) or 0),
+        )
         self._frame_ready_event = threading.Event()
         self._last_capture_status = 'init'
         self._last_frame_ts = 0.0
@@ -278,6 +287,10 @@ class StreamProcessor:
             self._latest_input_frame = None
         with self._latest_render_lock:
             self._latest_rendered_frame = None
+        with self._render_queue_lock:
+            self._render_queue.clear()
+        self._frame_buffer.clear()
+        self._result_overlays_by_frame.clear()
 
         self.inference_scheduler.remove_stream(self.stream_tracking_key)
         self._close_ffmpeg(release_nvenc=True)
@@ -337,6 +350,19 @@ class StreamProcessor:
         with self._latest_render_lock:
             self._latest_rendered_frame = frame
 
+    def _enqueue_rendered_frame(self, frame: np.ndarray):
+        frame = np.ascontiguousarray(frame, dtype=np.uint8)
+        with self._latest_render_lock:
+            self._latest_rendered_frame = frame
+        with self._render_queue_lock:
+            self._render_queue.append(frame)
+
+    def _take_next_rendered_frame(self) -> Optional[np.ndarray]:
+        with self._render_queue_lock:
+            if not self._render_queue:
+                return None
+            return self._render_queue.popleft()
+
     def _take_latest_rendered_frame(self) -> Optional[np.ndarray]:
         with self._latest_render_lock:
             frame = self._latest_rendered_frame
@@ -393,6 +419,10 @@ class StreamProcessor:
             self._frame_id += 1
             fid = self._frame_id
             interval = self._current_inference_interval(frame)
+            self._frame_buffer.append((fid, frame.copy()))
+            if self._tracker is not None:
+                self._tracker.predict(frame)
+                self._last_detection_overlays = self._tracker.get_active_tracks()
 
             latest_result = self.inference_scheduler.get_latest_result(self.stream_tracking_key)
             if latest_result:
@@ -401,7 +431,6 @@ class StreamProcessor:
                     self._process_infer_results(latest_result.get('results', {}) or {}, result_fid)
                     self._last_applied_result_frame_id = result_fid
 
-            rendered_frame = frame.copy()
             detection_dict = {}
 
             # 异步推理：先取上一次结果（非阻塞），再发新请求
@@ -424,9 +453,6 @@ class StreamProcessor:
                     frame_id=fid,
                 )
 
-            if self._last_detection_overlays:
-                rendered_frame = self._draw_detection_overlays(rendered_frame, self._last_detection_overlays)
-
             alert_target_info = None
             track_count = int(self._last_tracking_summary.get('track_count', 0))
             if track_count > 0:
@@ -442,8 +468,11 @@ class StreamProcessor:
                     'tracking_enabled': bool(getattr(self.config, 'tracking_enabled', False)),
                 }
 
+            rendered_frame = frame.copy()
+            if self._last_detection_overlays:
+                rendered_frame = self._draw_detection_overlays(rendered_frame, self._last_detection_overlays)
             rendered_frame = self._draw_ai_badge(rendered_frame, fid=fid)
-            self._store_latest_rendered_frame(rendered_frame)
+            self._enqueue_rendered_frame(rendered_frame)
             self._last_processed_ts = time.time()
 
             if self.alert_system.alert_handler:
@@ -496,26 +525,33 @@ class StreamProcessor:
 
     def _process_infer_results(self, results, fid):
         """处理推理结果，更新检测覆盖层"""
-        overlays = []
+        raw_detections = []
         total = 0
         class_names = set()
-        track_ids = set()
         for aid, res in results.items():
             cnt = self._count_detections(res)
             total += cnt
-            model_overlays = self._extract_detection_overlays(res, aid, fid=fid)
-            overlays.extend(model_overlays)
-            for overlay in model_overlays:
-                c = str(overlay.get('class_name', '')).strip()
+            model_detections = self._extract_raw_detections(res, aid, fid=fid)
+            raw_detections.extend(model_detections)
+            for det in model_detections:
+                c = str(det.get('class_name', '')).strip()
                 if c:
                     class_names.add(c)
+        track_ids = set()
+        tracking_enabled = bool(getattr(self.config, 'tracking_enabled', False))
+        if self._tracker is not None:
+            self._tracker.update(raw_detections, frame=None)
+            overlays = self._tracker.get_active_tracks()
+            for overlay in overlays:
                 tid = overlay.get('track_id')
                 if tid not in (None, ''):
                     try:
                         track_ids.add(int(tid))
                     except Exception:
                         track_ids.add(tid)
-        tracking_enabled = bool(getattr(self.config, 'tracking_enabled', False))
+        else:
+            overlays = self._build_overlays_from_detections(raw_detections)
+
         alarm_count = len(track_ids) if tracking_enabled and track_ids else total
         if alarm_count > 0:
             self._last_target_seen_ts = time.time()
@@ -548,6 +584,10 @@ class StreamProcessor:
                 self._latest_input_frame = None
             with self._latest_render_lock:
                 self._latest_rendered_frame = None
+            with self._render_queue_lock:
+                self._render_queue.clear()
+            self._frame_buffer.clear()
+            self._result_overlays_by_frame.clear()
         elif status in (VideoStreamStatus.READING, VideoStreamStatus.CONNECTED):
             self._push_reset_needed = True
 
@@ -563,15 +603,15 @@ class StreamProcessor:
             pass
         return 0
 
-    def _extract_detection_overlays(self, results, algo_id: str, fid: Optional[int] = None):
-        overlays = []
+    def _extract_raw_detections(self, results, algo_id: str, fid: Optional[int] = None):
+        detections = []
         try:
             r = results[0] if isinstance(results, (list, tuple)) and results else results
             if r is None or not hasattr(r, 'boxes') or r.boxes is None:
-                return overlays
+                return detections
             boxes = r.boxes
             if len(boxes) == 0:
-                return overlays
+                return detections
             if fid is not None:
                 self._trace_stage(fid, 'tensor_extract_start', algo_id=algo_id)
             xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else np.asarray(boxes.xyxy)
@@ -587,32 +627,82 @@ class StreamProcessor:
                 conf = float(confs[i])
                 cls_id = int(clss[i])
                 label = names.get(cls_id, str(cls_id)) if isinstance(names, dict) else str(cls_id)
-                raw_detections.append({
+                detections.append({
                     'xyxy': (x1, y1, x2, y2),
                     'color': color,
                     'class_name': str(label),
                     'algo_id': str(algo_id),
                     'confidence': conf,
                 })
-            assigned_track_ids = [None] * len(raw_detections)
-            if self._tracker is not None and raw_detections:
-                assigned_track_ids = self._tracker.update(raw_detections)
-            for det, track_id in zip(raw_detections, assigned_track_ids):
-                text = f"{algo_id}:{det['class_name']} {det['confidence']:.2f}"
-                if track_id is not None:
-                    text = f"{algo_id}:ID{track_id} {det['class_name']} {det['confidence']:.2f}"
-                overlays.append({
-                    'xyxy': det['xyxy'],
-                    'text': text,
-                    'color': det['color'],
-                    'class_name': det['class_name'],
-                    'algo_id': det['algo_id'],
-                    'confidence': det['confidence'],
-                    'track_id': track_id,
-                })
         except Exception as e:
             logging.debug(f"[{self.name}] 提取绘框信息异常: {e}")
+        return detections
+
+    def _build_overlays_from_detections(self, detections):
+        overlays = []
+        for det in detections or []:
+            overlays.append({
+                'xyxy': det['xyxy'],
+                'text': f"{det['algo_id']}:{det['class_name']} {det['confidence']:.2f}",
+                'color': det['color'],
+                'class_name': det['class_name'],
+                'algo_id': det['algo_id'],
+                'confidence': det['confidence'],
+                'track_id': None,
+            })
         return overlays
+
+    def _find_frame_in_buffer(self, fid: int) -> Optional[np.ndarray]:
+        for frame_id, frame in reversed(self._frame_buffer):
+            if int(frame_id) == int(fid):
+                return frame
+        return None
+
+    def _get_replay_frames(self, fid: int):
+        replay_frames = []
+        for frame_id, frame in self._frame_buffer:
+            if int(frame_id) >= int(fid):
+                replay_frames.append((int(frame_id), frame))
+        return replay_frames
+
+    def _select_overlays_for_frame(self, fid: int):
+        if not self._result_overlays_by_frame:
+            return []
+        candidate_fids = [result_fid for result_fid in self._result_overlays_by_frame.keys() if int(result_fid) <= int(fid)]
+        if not candidate_fids:
+            return []
+        selected_fid = max(candidate_fids)
+        return list(self._result_overlays_by_frame.get(int(selected_fid), []) or [])
+
+    def _emit_ready_frames(self):
+        while len(self._frame_buffer) > self._output_delay_frames:
+            frame_id, frame = self._frame_buffer.popleft()
+            overlays = self._select_overlays_for_frame(frame_id)
+            self._last_detection_overlays = overlays
+            track_ids = []
+            class_names = []
+            for overlay in overlays:
+                track_id = overlay.get('track_id')
+                if track_id not in (None, ''):
+                    track_ids.append(track_id)
+                class_name = str(overlay.get('class_name', '')).strip()
+                if class_name:
+                    class_names.append(class_name)
+            self._last_tracking_summary = {
+                'track_count': int(len(track_ids) if track_ids else len(overlays)),
+                'track_ids': list(track_ids),
+                'classes': sorted(set(class_names)),
+            }
+
+            rendered_frame = frame.copy()
+            if overlays:
+                rendered_frame = self._draw_detection_overlays(rendered_frame, overlays)
+            rendered_frame = self._draw_ai_badge(rendered_frame, fid=frame_id)
+            self._enqueue_rendered_frame(rendered_frame)
+
+            stale_keys = [key for key in self._result_overlays_by_frame.keys() if int(key) < int(frame_id) - self._output_delay_frames]
+            for key in stale_keys:
+                self._result_overlays_by_frame.pop(key, None)
     def _draw_ai_badge(self, frame: np.ndarray, fid: Optional[int] = None) -> np.ndarray:
         try:
             badge_text = "AI"
@@ -653,7 +743,9 @@ class StreamProcessor:
         return frame
 
     def _draw_detections(self, frame: np.ndarray, results, algo_id: str) -> np.ndarray:
-        overlays = self._extract_detection_overlays(results, algo_id)
+        overlays = self._build_overlays_from_detections(
+            self._extract_raw_detections(results, algo_id)
+        )
         return self._draw_detection_overlays(frame, overlays)
 
     def _color_for_model(self, algo_id: str):
@@ -846,8 +938,8 @@ class StreamProcessor:
         process_age = (now - self._last_processed_ts) if self._last_processed_ts else -1.0
         push_age = (now - self._last_push_ts) if self._last_push_ts else -1.0
         infer_age = (now - self._last_infer_result_ts) if self._last_infer_result_ts else -1.0
-        with self._latest_render_lock:
-            rendered_ready = self._latest_rendered_frame is not None
+        with self._render_queue_lock:
+            rendered_ready = bool(self._render_queue)
         return (
             f"capture_status={self._last_capture_status}, "
             f"frame_id={self._frame_id}, "
@@ -896,12 +988,12 @@ class StreamProcessor:
                 next_push_time = now
 
             frame = None
-            latest_frame = self._take_latest_rendered_frame()
-            got_new_frame = latest_frame is not None
+            next_frame = self._take_next_rendered_frame()
+            got_new_frame = next_frame is not None
 
             if got_new_frame:
-                frame = latest_frame
-                last_frame = latest_frame
+                frame = next_frame
+                last_frame = next_frame
                 repeated_frame_count = 0
             elif (
                 last_frame is not None
