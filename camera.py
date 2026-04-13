@@ -761,12 +761,7 @@ class StreamProcessor:
             if output_scheme == 'rtsp':
                 cmd += ['-rtsp_transport', 'tcp', '-muxdelay', '0', '-muxpreload', '0', '-f', 'rtsp', output_url]
             elif output_scheme == 'rtmp':
-                # RTMP 推流参数（不使用 timeout，会导致 listen 模式错误）
-                cmd += [
-                    '-flvflags', 'no_duration_filesize',
-                    '-f', 'flv',
-                    output_url
-                ]
+                cmd += ['-flvflags', 'no_duration_filesize', '-f', 'flv', output_url]
             else:
                 raise ValueError(f"不支持的推流协议: {output_scheme}")
             return cmd
