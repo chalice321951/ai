@@ -761,11 +761,8 @@ class StreamProcessor:
             if output_scheme == 'rtsp':
                 cmd += ['-rtsp_transport', 'tcp', '-muxdelay', '0', '-muxpreload', '0', '-f', 'rtsp', output_url]
             elif output_scheme == 'rtmp':
-                # 添加 RTMP 超时和重连参数，防止服务器主动断开
+                # RTMP 推流参数（不使用 timeout，会导致 listen 模式错误）
                 cmd += [
-                    '-rtmp_live', 'live',           # 实时流模式
-                    '-rtmp_buffer', '1000',         # 缓冲区大小(ms)
-                    '-timeout', '10000000',         # 超时时间10秒(微秒)
                     '-flvflags', 'no_duration_filesize',
                     '-f', 'flv',
                     output_url
