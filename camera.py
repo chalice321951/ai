@@ -982,8 +982,8 @@ class StreamProcessor:
 
             if not self._check_ffmpeg_health():
                 failure_reason = self._describe_ffmpeg_failure()
-                logging.error(f"[{self.name}] output broken pipe snapshot: {self._build_pipeline_snapshot()}")
-                logging.warning(f"[{self.name}] output health snapshot: {self._build_pipeline_snapshot()}")
+                logging.error(f"[{self.name}] FFmpeg健康检查失败")
+                logging.error(f"[{self.name}] 管道状态快照: {self._build_pipeline_snapshot()}")
                 if failure_reason:
                     logging.warning(f"[{self.name}] FFmpeg异常，尝试重启(退避{self._ffmpeg_restart_backoff:.1f}s)，原因: {failure_reason}")
                 else:
@@ -1024,9 +1024,13 @@ class StreamProcessor:
                 if frame_count % 500 == 0:
                     logging.info(f"[{self.name}] 已推流 {frame_count} 帧")
             except BrokenPipeError:
-                logging.error(f"[{self.name}] output broken pipe snapshot: {self._build_pipeline_snapshot()}")
+                logging.error(f"[{self.name}] 推流管道断开(BrokenPipeError)")
+                logging.error(f"[{self.name}] 管道状态快照: {self._build_pipeline_snapshot()}")
                 failure_reason = self._describe_ffmpeg_failure()
-                logging.error(f"[{self.name}] 推流管道断开，尝试恢复，原因: {failure_reason}")
+                if failure_reason:
+                    logging.error(f"[{self.name}] 推流管道断开，尝试恢复，原因: {failure_reason}")
+                else:
+                    logging.error(f"[{self.name}] 推流管道断开，尝试恢复")
                 if not self._restart_ffmpeg():
                     self._ffmpeg_restart_backoff = min(30.0, self._ffmpeg_restart_backoff * 2)
                     time.sleep(self._ffmpeg_restart_backoff)
