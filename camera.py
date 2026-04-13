@@ -761,7 +761,15 @@ class StreamProcessor:
             if output_scheme == 'rtsp':
                 cmd += ['-rtsp_transport', 'tcp', '-muxdelay', '0', '-muxpreload', '0', '-f', 'rtsp', output_url]
             elif output_scheme == 'rtmp':
-                cmd += ['-flvflags', 'no_duration_filesize', '-f', 'flv', output_url]
+                # 添加 RTMP 超时和重连参数，防止服务器主动断开
+                cmd += [
+                    '-rtmp_live', 'live',           # 实时流模式
+                    '-rtmp_buffer', '1000',         # 缓冲区大小(ms)
+                    '-timeout', '10000000',         # 超时时间10秒(微秒)
+                    '-flvflags', 'no_duration_filesize',
+                    '-f', 'flv',
+                    output_url
+                ]
             else:
                 raise ValueError(f"不支持的推流协议: {output_scheme}")
             return cmd
@@ -937,8 +945,8 @@ class StreamProcessor:
         next_push_time = time.perf_counter()
         last_frame: Optional[np.ndarray] = None
         repeated_frame_count = 0
-        max_repeat_frames = 1
-        stale_repeat_window = max(0.3, interval * 2.5)
+        max_repeat_frames = 100  # 增加到100，允许重复推送更多帧，防止RTMP超时
+        stale_repeat_window = max(5.0, interval * 10)  # 增加到5秒，更长的重复窗口
         frame_count = 0
 
         while self.is_running:
