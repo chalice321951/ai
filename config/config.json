@@ -7,7 +7,7 @@
     "device": "gpu"
   },
   "stream": {
-    "pull_device": "cpu",
+    "pull_device": "gpu",
     "push_device": "gpu"
   },
   "tracking": {
@@ -164,9 +164,9 @@
   },
   "performance": {
     "detection_inference_interval": 3,
-    "result_max_back_frames": 30,
-    "max_infer_result_age": 1.0,
-    "max_infer_frame_lag": 5
+    "result_max_back_frames": 15,
+    "max_infer_result_age": 0.5,
+    "max_infer_frame_lag": 3
   },
   "alarm": {
     "target_threshold": 1,
@@ -182,19 +182,19 @@
   },
   "video": {
     "auto_detect_resolution": true,
-    "target_width": 1920,
-    "target_height": 1080,
-    "default_width": 1920,
-    "default_height": 1080,
+    "target_width": 1280,
+    "target_height": 720,
+    "default_width": 1280,
+    "default_height": 720,
     "fps": 25,
-    "push_fps": 10,
-    "bitrate": "2M",
-    "max_bitrate": "3M",
-    "buffer_size": "1M",
-    "gop_size": 10,
+    "push_fps": 20,
+    "bitrate": "3M",
+    "max_bitrate": "5M",
+    "buffer_size": "5M",
+    "gop_size": 20,
     "push_enabled": true,
-    "push_codec": "auto",
-    "encoding_preset": "p1"
+    "push_codec": "h264_nvenc",
+    "encoding_preset": "p3"
   },
   "minio": {
     "endpoint": "223.84.144.55:31887",
