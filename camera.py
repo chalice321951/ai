@@ -440,6 +440,14 @@ class StreamProcessor:
                 ):
                     self._process_infer_results(latest_result.get('results', {}) or {}, result_fid)
                     self._last_applied_result_frame_id = result_fid
+                else:
+                    # 记录推理结果被丢弃的原因，便于调试
+                    if result_fid <= self._last_applied_result_frame_id:
+                        logging.debug(f"[{self.name}] 丢弃旧推理结果: result_fid={result_fid} <= last_applied={self._last_applied_result_frame_id}")
+                    elif result_age > max_result_age:
+                        logging.debug(f"[{self.name}] 丢弃过期推理结果: result_age={result_age:.2f}s > max={max_result_age}s, fid={fid}, result_fid={result_fid}")
+                    elif frame_lag > max_frame_lag:
+                        logging.debug(f"[{self.name}] 丢弃滞后推理结果: frame_lag={frame_lag} > max={max_frame_lag}, fid={fid}, result_fid={result_fid}")
 
             detection_dict = {}
 
