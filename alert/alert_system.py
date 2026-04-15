@@ -108,20 +108,26 @@ class AlertHandler:
         self.clip_jobs_lock = threading.Lock()
         self._latest_push_frame: Optional[np.ndarray] = None
         self.writer_threads: List[threading.Thread] = []
+        self._frame_sequence = 0
+        self.validation_image_mae_threshold = 8.0
+        self.validation_video_mae_threshold = 12.0
 
     def update_latest_push_frame(self, frame: np.ndarray):
         if frame is not None:
             self._latest_push_frame = frame
 
-    def collect_clip_frame(self, frame: np.ndarray, original_frame: np.ndarray = None):
+    def collect_clip_frame(self, frame: np.ndarray, original_frame: np.ndarray = None,
+                           frame_ts: Optional[float] = None):
         """收集帧到循环缓冲区，并推进活跃剪辑任务"""
         try:
             f = frame if frame is not None else original_frame
             if f is None:
                 return
-            now = time.time()
+            now = float(frame_ts if frame_ts is not None else time.time())
             with self.buffer_lock:
-                self.frame_buffer.append({'frame': f.copy(), 'timestamp': now})
+                self._frame_sequence += 1
+                current_seq = self._frame_sequence
+                self.frame_buffer.append({'frame': f.copy(), 'timestamp': now, 'sequence': current_seq})
                 cutoff = now - self.buffer_seconds
                 while self.frame_buffer and self.frame_buffer[0]['timestamp'] <= cutoff:
                     self.frame_buffer.pop(0)
@@ -134,7 +140,8 @@ class AlertHandler:
                     if now <= job['deadline']:
                         if job.pop('skip_next_append', False):
                             continue
-                        job['frames'].append(f.copy())
+                        if current_seq > int(job.get('trigger_sequence', 0) or 0):
+                            job['frames'].append(f.copy())
                     else:
                         completed.append(tid)
                 done_jobs = [self.clip_jobs.pop(tid) for tid in completed]
@@ -145,12 +152,13 @@ class AlertHandler:
             logging.error(f"collect_clip_frame 异常: {e}")
 
     def handle_alert(self, alert_event: AlertEvent, frame: np.ndarray = None,
-                     target_info: dict = None):
+                     target_info: dict = None, frame_ts: Optional[float] = None):
         try:
-            frame_for_alert = self._latest_push_frame if self._latest_push_frame is not None else frame
+            frame_for_alert = frame if frame is not None else self._latest_push_frame
             alert_image_path = self._save_alert_image(alert_event, frame_for_alert)
             if frame_for_alert is not None:
-                self._start_clip_job(alert_event, frame_for_alert, alert_image_path)
+                trigger_ts = float(frame_ts if frame_ts is not None else time.time())
+                self._start_clip_job(alert_event, frame_for_alert, alert_image_path, trigger_ts, target_info=target_info)
         except Exception as e:
             logging.error(f"handle_alert 异常: {e}")
 
@@ -168,26 +176,49 @@ class AlertHandler:
             logging.error(f"保存告警图片失败: {e}")
             return ""
 
-    def _start_clip_job(self, event: AlertEvent, frame: np.ndarray, image_path: str):
-        now = time.time()
+    def _start_clip_job(
+        self,
+        event: AlertEvent,
+        frame: np.ndarray,
+        image_path: str,
+        trigger_ts: float,
+        target_info: Optional[dict] = None,
+    ):
         pre_frames = []
+        trigger_sequence = 0
         with self.buffer_lock:
-            cutoff = now - self.pre_alert_seconds
+            cutoff = trigger_ts - self.pre_alert_seconds
             for fd in self.frame_buffer:
-                if fd['timestamp'] >= cutoff - 1.0:
+                fd_ts = float(fd.get('timestamp', 0.0) or 0.0)
+                fd_seq = int(fd.get('sequence', 0) or 0)
+                if fd_ts > trigger_ts:
+                    continue
+                if fd_ts >= cutoff and fd_seq > 0:
                     pre_frames.append(fd['frame'].copy())
-            if len(pre_frames) < 10:
-                pre_frames = [fd['frame'].copy() for fd in self.frame_buffer]
+                    trigger_sequence = max(trigger_sequence, fd_seq)
+            if not pre_frames:
+                for fd in self.frame_buffer:
+                    fd_ts = float(fd.get('timestamp', 0.0) or 0.0)
+                    fd_seq = int(fd.get('sequence', 0) or 0)
+                    if fd_ts <= trigger_ts:
+                        pre_frames.append(fd['frame'].copy())
+                        trigger_sequence = max(trigger_sequence, fd_seq)
+
+        if len(pre_frames) > 1:
+            pre_frames = pre_frames[:-1]
 
         job = {
             'target_id': event.rule_id,
             'event': event,
             'class': event.metadata.get('class_name', 'unknown') if event.metadata else 'unknown',
             'frames': pre_frames + [frame.copy()],
-            'deadline': now + self.post_alert_seconds,
+            'trigger_index': len(pre_frames),
+            'deadline': trigger_ts + self.post_alert_seconds,
             'max_frames': self.buffer_seconds * self.clip_fps,
             'alert_image_path': image_path,
             'skip_next_append': True,
+            'trigger_sequence': trigger_sequence,
+            'validation_boxes': list((target_info or {}).get('_validation_boxes', []) or []),
         }
         with self.clip_jobs_lock:
             self.clip_jobs[event.rule_id] = job
@@ -200,11 +231,29 @@ class AlertHandler:
                 if not frames:
                     return
                 target_frames = self.clip_seconds * self.clip_fps
-                if len(frames) > target_frames:
-                    frames = frames[-target_frames:]
-                if len(frames) < target_frames:
-                    pad = min(target_frames - len(frames), self.clip_fps)
-                    frames = frames + [frames[-1]] * pad
+                trigger_index = max(0, min(int(job.get('trigger_index', len(frames) - 1) or 0), len(frames) - 1))
+                pre_target = max(0, target_frames // 2)
+                post_target = max(0, target_frames - pre_target - 1)
+
+                pre_frames = frames[:trigger_index]
+                trigger_frame = frames[trigger_index]
+                post_frames = frames[trigger_index + 1:]
+
+                if len(pre_frames) >= pre_target:
+                    pre_frames = pre_frames[-pre_target:]
+                elif pre_frames:
+                    pre_frames = [pre_frames[0]] * (pre_target - len(pre_frames)) + pre_frames
+                else:
+                    pre_frames = [trigger_frame.copy() for _ in range(pre_target)]
+
+                if len(post_frames) >= post_target:
+                    post_frames = post_frames[:post_target]
+                elif post_frames:
+                    post_frames = post_frames + [post_frames[-1]] * (post_target - len(post_frames))
+                else:
+                    post_frames = [trigger_frame.copy() for _ in range(post_target)]
+
+                frames = pre_frames + [trigger_frame] + post_frames
 
                 ts = time.strftime("%Y%m%d-%H%M%S")
                 clip_path = os.path.join(
@@ -215,6 +264,12 @@ class AlertHandler:
                 logging.info(f"告警视频已保存: {clip_path}")
 
                 # ── MinIO 上传 ───────────────────────────────
+                self._validate_alert_assets(
+                    alert_image_path=job.get('alert_image_path', ''),
+                    alert_video_path=clip_path if video_saved else '',
+                    trigger_frame=trigger_frame,
+                    validation_boxes=job.get('validation_boxes', []) or [],
+                )
                 image_url, video_url = self._upload_alert_assets(
                     alert_image_path=job.get('alert_image_path', ''),
                     alert_video_path=clip_path if video_saved else '',
@@ -226,6 +281,122 @@ class AlertHandler:
         t = threading.Thread(target=_run, daemon=True)
         t.start()
         self.writer_threads.append(t)
+
+    def _validate_alert_assets(
+        self,
+        alert_image_path: str,
+        alert_video_path: str,
+        trigger_frame: Optional[np.ndarray],
+        validation_boxes: Optional[List[dict]] = None,
+    ):
+        if trigger_frame is None:
+            logging.warning("告警质检跳过: 缺少触发帧")
+            return
+        try:
+            image_ok, image_msg = self._validate_alert_image(alert_image_path, trigger_frame, validation_boxes or [])
+            video_ok, video_msg = self._validate_alert_video(alert_video_path, trigger_frame)
+            if image_ok and video_ok:
+                logging.info(f"告警质检通过: {image_msg}; {video_msg}")
+            else:
+                logging.error(f"告警质检失败: {image_msg}; {video_msg}")
+        except Exception as e:
+            logging.error(f"告警质检异常: {e}")
+
+    def _validate_alert_image(self, alert_image_path: str, trigger_frame: np.ndarray, validation_boxes: List[dict]):
+        if not alert_image_path or not os.path.exists(alert_image_path):
+            return False, "报警图片不存在"
+        image = cv2.imread(alert_image_path)
+        if image is None:
+            return False, "报警图片无法读取"
+        mae = self._compute_frame_mae(image, trigger_frame)
+        box_ok, box_msg = self._validate_box_pixels(image, validation_boxes)
+        ok = mae <= self.validation_image_mae_threshold and box_ok
+        return ok, f"图片MAE={mae:.2f}, {box_msg}"
+
+    def _validate_alert_video(self, alert_video_path: str, trigger_frame: np.ndarray):
+        if not alert_video_path or not os.path.exists(alert_video_path):
+            return False, "报警视频不存在"
+        middle_frame = self._read_video_middle_frame(alert_video_path)
+        if middle_frame is None:
+            return False, "报警视频中间帧无法读取"
+        mae = self._compute_frame_mae(middle_frame, trigger_frame)
+        ok = mae <= self.validation_video_mae_threshold
+        return ok, f"视频中帧MAE={mae:.2f}"
+
+    def _compute_frame_mae(self, frame_a: np.ndarray, frame_b: np.ndarray) -> float:
+        if frame_a is None or frame_b is None:
+            return float('inf')
+        if frame_a.shape[:2] != frame_b.shape[:2]:
+            frame_a = cv2.resize(frame_a, (frame_b.shape[1], frame_b.shape[0]))
+        diff = np.abs(frame_a.astype(np.float32) - frame_b.astype(np.float32))
+        return float(diff.mean())
+
+    def _validate_box_pixels(self, frame: np.ndarray, validation_boxes: List[dict]):
+        if frame is None:
+            return False, "报警图片为空"
+        if not validation_boxes:
+            return True, "未提供验框信息"
+        height, width = frame.shape[:2]
+        matched = 0
+        checked = 0
+        for box in validation_boxes:
+            xyxy = list(box.get('xyxy', []) or [])
+            color = np.asarray(list(box.get('color', []) or []), dtype=np.int16)
+            if len(xyxy) != 4 or color.shape[0] != 3:
+                continue
+            x1, y1, x2, y2 = [int(v) for v in xyxy]
+            x1 = max(0, min(width - 1, x1))
+            x2 = max(0, min(width - 1, x2))
+            y1 = max(0, min(height - 1, y1))
+            y2 = max(0, min(height - 1, y2))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            checked += 1
+            top = frame[y1:min(y1 + 2, height), x1:x2 + 1]
+            bottom = frame[max(0, y2 - 1):y2 + 1, x1:x2 + 1]
+            left = frame[y1:y2 + 1, x1:min(x1 + 2, width)]
+            right = frame[y1:y2 + 1, max(0, x2 - 1):x2 + 1]
+            border_pixels = np.concatenate([
+                top.reshape(-1, 3),
+                bottom.reshape(-1, 3),
+                left.reshape(-1, 3),
+                right.reshape(-1, 3),
+            ], axis=0).astype(np.int16)
+            if border_pixels.size == 0:
+                continue
+            delta = np.abs(border_pixels - color)
+            hits = np.all(delta <= 90, axis=1)
+            hit_ratio = float(hits.mean()) if hits.size else 0.0
+            if hit_ratio >= 0.15:
+                matched += 1
+        if checked == 0:
+            return True, "未提供有效验框信息"
+        if matched > 0:
+            return True, f"验框通过={matched}/{checked}"
+        return False, f"验框失败=0/{checked}"
+
+    def _read_video_middle_frame(self, video_path: str) -> Optional[np.ndarray]:
+        cap = None
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap or not cap.isOpened():
+                return None
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            middle_index = max(0, frame_count // 2)
+            if frame_count > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, middle_index)
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                return frame
+            return None
+        except Exception:
+            return None
+        finally:
+            try:
+                if cap is not None:
+                    cap.release()
+            except Exception:
+                pass
 
     def _upload_alert_assets(self, alert_image_path: str, alert_video_path: str):
         """上传图片/视频到 MinIO。"""
@@ -346,7 +517,8 @@ class AlertSystem:
 
     def process_frame_alerts(self, frame: np.ndarray, detection_dict: dict,
                              original_frame: np.ndarray = None,
-                             target_info: dict = None):
+                             target_info: dict = None,
+                             frame_ts: Optional[float] = None):
         if not self.alert_handler:
             now = time.time()
             if now - self._last_uninit_warn > 300:
@@ -385,7 +557,7 @@ class AlertSystem:
                     )
                     logging.warning(f"[AlertSystem] 触发告警: {rule_id} val={val:.2f}")
                     try:
-                        self.alert_handler.handle_alert(event, frame, target_info)
+                        self.alert_handler.handle_alert(event, frame, target_info, frame_ts=frame_ts)
                     except Exception as e:
                         logging.error(f"告警处理异常: {e}")
                 else:

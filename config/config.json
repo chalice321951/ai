@@ -14,8 +14,7 @@
     "persist": true,
     "tracker": "bytetrack.yaml",
     "conf_threshold": 0.3,
-    "match_iou": 0.3,
-    "max_predict_gap_ms": 200
+    "match_iou": 0.3
   },
   "models": {
     "default_conf_threshold": 0.7,
