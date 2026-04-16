@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+*.log
+
+# 图片视频
+*.mp4
+*.avi
+*.jpg
+*.png
+
+# YOLO输出
+runs/
+output/
+clips/
+
+# 临时文件
+*.tmp
+*.cache
+
+# VSCode
+.vscode/
+
+# 系统文件
+.DS_Store
+Thumbs.db
