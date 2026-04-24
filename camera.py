@@ -161,6 +161,7 @@ class StreamProcessor:
             'track_ids': [],
             'classes': [],
         }
+        self._logged_active_track_ids = set()
         self._latest_input_frame: Optional[np.ndarray] = None
         self._latest_rendered_frame: Optional[np.ndarray] = None
         self._latest_frame_lock = threading.Lock()
@@ -274,6 +275,7 @@ class StreamProcessor:
             'track_ids': [],
             'classes': [],
         }
+        self._logged_active_track_ids.clear()
         self._last_infer_frame_id = -1
         self._last_applied_result_frame_id = -1
         if self._tracker is not None:
@@ -512,7 +514,21 @@ class StreamProcessor:
         alarm_count = len(track_ids) if tracking_enabled and track_ids else total
         if alarm_count > 0:
             self._last_target_seen_ts = time.time()
-            logging.info(f"[{self.name}] 检测到目标: alarm_count={alarm_count}, track_ids={sorted(track_ids, key=lambda x: str(x))}, classes={sorted(class_names)}")
+            if tracking_enabled and track_ids:
+                current_track_ids = set(track_ids)
+                if current_track_ids != self._logged_active_track_ids:
+                    logging.info(
+                        f"[{self.name}] 检测到目标: "
+                        f"alarm_count={alarm_count}, track_ids={sorted(track_ids, key=lambda x: str(x))}, classes={sorted(class_names)}"
+                    )
+                    self._logged_active_track_ids = current_track_ids
+            elif self._last_infer_result_count <= 0:
+                logging.info(
+                    f"[{self.name}] 检测到目标: "
+                    f"alarm_count={alarm_count}, classes={sorted(class_names)}"
+                )
+        else:
+            self._logged_active_track_ids.clear()
         self._last_infer_result_ts = time.time()
         self._last_infer_result_count = int(alarm_count)
         self._last_tracking_summary = {
@@ -578,6 +594,7 @@ class StreamProcessor:
                 'track_ids': [],
                 'classes': [],
             }
+            self._logged_active_track_ids.clear()
             self._last_infer_frame_id = -1
             self._last_applied_result_frame_id = -1
             if self._tracker is not None:
