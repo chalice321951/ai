@@ -417,6 +417,9 @@ class StreamProcessor:
             if self._tracker is not None:
                 self._last_detection_overlays = self._tracker.get_active_tracks()
 
+            alert_detection_dict = {}
+            alert_target_info = None
+            alert_frame = None
             latest_result = self.inference_scheduler.get_latest_result(self.stream_tracking_key)
             if latest_result:
                 result_fid = int(latest_result.get('frame_id', 0) or 0)
@@ -430,7 +433,11 @@ class StreamProcessor:
                     and result_age <= max_result_age
                     and frame_lag <= max_frame_lag
                 ):
-                    self._process_infer_results(latest_result.get('results', {}) or {}, result_fid)
+                    alert_payload = self._process_infer_results(latest_result.get('results', {}) or {}, result_fid)
+                    if alert_payload:
+                        alert_detection_dict = dict(alert_payload.get('detection_dict', {}) or {})
+                        alert_target_info = dict(alert_payload.get('target_info', {}) or {})
+                        alert_frame = alert_payload.get('frame')
                     self._last_applied_result_frame_id = result_fid
                 else:
                     # 记录推理结果被丢弃的原因，便于调试
@@ -440,8 +447,6 @@ class StreamProcessor:
                         logging.debug(f"[{self.name}] 丢弃过期推理结果: result_age={result_age:.2f}s > max={max_result_age}s, fid={fid}, result_fid={result_fid}")
                     elif frame_lag > max_frame_lag:
                         logging.debug(f"[{self.name}] 丢弃滞后推理结果: frame_lag={frame_lag} > max={max_frame_lag}, fid={fid}, result_fid={result_fid}")
-
-            detection_dict = {}
 
             # 异步推理：提交新请求
             if self.inference_scheduler.is_loaded() and (fid - self._last_infer_frame_id) >= interval:
@@ -453,31 +458,6 @@ class StreamProcessor:
                     frame_id=fid,
                 )
 
-            alert_target_info = None
-            track_count = int(self._last_tracking_summary.get('track_count', 0))
-            if track_count > 0:
-                overlay_classes = sorted({str(o.get('class_name', '')).strip() for o in self._last_detection_overlays if str(o.get('class_name', '')).strip()})
-                class_text = ','.join(overlay_classes) if overlay_classes else 'unknown'
-                validation_boxes = []
-                for overlay in self._last_detection_overlays:
-                    xyxy = tuple(overlay.get('xyxy', ()) or ())
-                    color = tuple(overlay.get('color', ()) or ())
-                    if len(xyxy) == 4 and len(color) == 3:
-                        validation_boxes.append({
-                            'xyxy': [int(v) for v in xyxy],
-                            'color': [int(v) for v in color],
-                        })
-                detection_dict["alarm_any_detection"] = float(track_count)
-                alert_target_info = {
-                    'classes': class_text,
-                    'class_name': class_text,
-                    'count': track_count,
-                    'track_count': track_count,
-                    'track_ids': list(self._last_tracking_summary.get('track_ids', [])),
-                    'tracking_enabled': bool(getattr(self.config, 'tracking_enabled', False)),
-                    '_validation_boxes': validation_boxes,
-                }
-
             rendered_frame = frame.copy()
             if self._last_detection_overlays:
                 rendered_frame = self._draw_detection_overlays(rendered_frame, self._last_detection_overlays)
@@ -488,10 +468,10 @@ class StreamProcessor:
 
             if self.alert_system.alert_handler:
                 self.alert_system.alert_handler.collect_clip_frame(rendered_frame, frame_ts=frame_ts)
-                if detection_dict and alert_target_info:
+                if alert_detection_dict and alert_target_info and alert_frame is not None:
                     self.alert_system.process_frame_alerts(
-                        rendered_frame,
-                        detection_dict,
+                        alert_frame,
+                        alert_detection_dict,
                         target_info=alert_target_info,
                         frame_ts=frame_ts,
                     )
@@ -541,6 +521,51 @@ class StreamProcessor:
             'classes': sorted(class_names),
         }
         self._last_detection_overlays = overlays
+        if alarm_count <= 0:
+            return None
+
+        reference_frame = self._find_frame_in_buffer(fid)
+        if reference_frame is None:
+            return None
+
+        confirmed_frame = reference_frame.copy()
+        if overlays:
+            confirmed_frame = self._draw_detection_overlays(confirmed_frame, overlays)
+        confirmed_frame = self._draw_ai_badge(confirmed_frame, fid=fid)
+        return {
+            'frame': confirmed_frame,
+            'detection_dict': {
+                'alarm_any_detection': float(self._last_tracking_summary.get('track_count', 0)),
+            },
+            'target_info': self._build_alert_target_info(overlays, self._last_tracking_summary),
+        }
+
+    def _build_alert_target_info(self, overlays, tracking_summary):
+        overlay_classes = sorted({
+            str(o.get('class_name', '')).strip()
+            for o in overlays or []
+            if str(o.get('class_name', '')).strip()
+        })
+        class_text = ','.join(overlay_classes) if overlay_classes else 'unknown'
+        validation_boxes = []
+        for overlay in overlays or []:
+            xyxy = tuple(overlay.get('xyxy', ()) or ())
+            color = tuple(overlay.get('color', ()) or ())
+            if len(xyxy) == 4 and len(color) == 3:
+                validation_boxes.append({
+                    'xyxy': [int(v) for v in xyxy],
+                    'color': [int(v) for v in color],
+                })
+        track_count = int((tracking_summary or {}).get('track_count', 0) or 0)
+        return {
+            'classes': class_text,
+            'class_name': class_text,
+            'count': track_count,
+            'track_count': track_count,
+            'track_ids': list((tracking_summary or {}).get('track_ids', []) or []),
+            'tracking_enabled': bool(getattr(self.config, 'tracking_enabled', False)),
+            '_validation_boxes': validation_boxes,
+        }
 
     def _on_status_change(self, stream_id: str, status: VideoStreamStatus):
         self._last_capture_status = status.value
