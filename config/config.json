@@ -20,7 +20,7 @@
     "default_conf_threshold": 0.7,
     "model_mappings": {
       "detection": {
-        "3001": "/home/lenovo/AI/models/jixie-all-0110.pt"
+        "3001": "/home/lenovo/AI/models/vis-m-bs16-sz960.pt"
       }
     }
   },

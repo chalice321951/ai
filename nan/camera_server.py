@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class PlatformApiClient:
     """巡检平台 API 客户端：负责登录、全局 token 复用与告警上报。"""
 
-    LOGIN_PATH = "/jeecg-boot/sys/login/simplet"
+    LOGIN_PATH = "/jeecg-boot/sys/login/simple"
     ALARM_REPORT_PATH = "/jeecg-boot/sys/api/ai-alarm"
     TOKEN_CACHE_FILE = os.path.join(os.path.dirname(__file__), "platform_token_cache.json")
 
