@@ -156,7 +156,12 @@ class StreamProcessor:
         self._push_reset_needed = False
         self._stream_codec: Optional[str] = None  # 本流实际使用的编码器
         self._using_nvenc = False  # 本流是否占用了 NVENC 槽位
-        self._ffmpeg_restart_backoff = 2.0  # FFmpeg重启退避时间
+        self._ffmpeg_restart_backoff_initial = max(0.1, float(getattr(self.config, 'push_restart_backoff_initial', 0.3) or 0.3))
+        self._ffmpeg_restart_backoff_max = max(
+            self._ffmpeg_restart_backoff_initial,
+            float(getattr(self.config, 'push_restart_backoff_max', 10.0) or 10.0),
+        )
+        self._ffmpeg_restart_backoff = self._ffmpeg_restart_backoff_initial  # FFmpeg重启退避时间
 
         self.video_processor = None
         self.capture_proxy: Optional[CaptureProxy] = None
@@ -1226,7 +1231,7 @@ class StreamProcessor:
             # 启动成功
             self.pipe = pipe
             self._stream_codec = try_codec
-            self._ffmpeg_restart_backoff = 2.0  # 成功后重置退避
+            self._ffmpeg_restart_backoff = self._ffmpeg_restart_backoff_initial  # 成功后重置退避
             logging.info(f"[{self.name}] FFmpeg推流启动成功(codec={try_codec}) -> {output_url}")
             return
 
@@ -1349,8 +1354,11 @@ class StreamProcessor:
         next_push_time = time.perf_counter()
         last_frame: Optional[np.ndarray] = None
         repeated_frame_count = 0
-        max_repeat_frames = 100  # 增加到100，允许重复推送更多帧，防止RTMP超时
-        stale_repeat_window = max(5.0, interval * 10)  # 增加到5秒，更长的重复窗口
+        max_repeat_frames = max(1, int(getattr(self.config, 'push_max_repeat_frames', 600) or 600))
+        stale_repeat_window = max(
+            float(getattr(self.config, 'push_stale_repeat_window', 30.0) or 30.0),
+            interval * 10,
+        )
         frame_count = 0
 
         while self.is_running:
@@ -1403,11 +1411,11 @@ class StreamProcessor:
                 time.sleep(self._ffmpeg_restart_backoff)
                 if not self._restart_ffmpeg():
                     # 指数退避，最大30秒
-                    self._ffmpeg_restart_backoff = min(30.0, self._ffmpeg_restart_backoff * 2)
+                    self._ffmpeg_restart_backoff = min(self._ffmpeg_restart_backoff_max, self._ffmpeg_restart_backoff * 2)
                     next_push_time = time.perf_counter() + interval
                     continue
                 else:
-                    self._ffmpeg_restart_backoff = 2.0  # 成功后重置
+                    self._ffmpeg_restart_backoff = self._ffmpeg_restart_backoff_initial  # 成功后重置
                     next_push_time = time.perf_counter() + interval
                     continue
 
@@ -1444,10 +1452,10 @@ class StreamProcessor:
                 else:
                     logging.error(f"[{self.name}] 推流管道断开，尝试恢复")
                 if not self._restart_ffmpeg():
-                    self._ffmpeg_restart_backoff = min(30.0, self._ffmpeg_restart_backoff * 2)
+                    self._ffmpeg_restart_backoff = min(self._ffmpeg_restart_backoff_max, self._ffmpeg_restart_backoff * 2)
                     time.sleep(self._ffmpeg_restart_backoff)
                 else:
-                    self._ffmpeg_restart_backoff = 2.0
+                    self._ffmpeg_restart_backoff = self._ffmpeg_restart_backoff_initial
                 next_push_time = time.perf_counter() + interval
             except Exception as e:
                 logging.error(f"[{self.name}] 推流写入失败: {e}")

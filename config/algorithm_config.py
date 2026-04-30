@@ -256,6 +256,13 @@ class CameraConfig:
         self.encoding_preset = video.get('encoding_preset', 'p4')
         self.auto_detect_resolution = bool(video.get('auto_detect_resolution', True))
         self.push_enabled = bool(video.get('push_enabled', True))
+        self.push_restart_backoff_initial = max(0.1, float(video.get('push_restart_backoff_initial', 0.3) or 0.3))
+        self.push_restart_backoff_max = max(
+            self.push_restart_backoff_initial,
+            float(video.get('push_restart_backoff_max', 10.0) or 10.0),
+        )
+        self.push_max_repeat_frames = max(1, int(video.get('push_max_repeat_frames', 600) or 600))
+        self.push_stale_repeat_window = max(1.0, float(video.get('push_stale_repeat_window', 30.0) or 30.0))
         codec_str = str(video.get('push_codec', 'auto')).lower()
         if self.push_device_mode == DeviceMode.CPU and codec_str in {VideoCodec.AUTO.value, VideoCodec.H264_NVENC.value}:
             codec_str = VideoCodec.LIBX264.value

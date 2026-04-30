@@ -5,7 +5,7 @@
     "enabled": false,
     "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
     "ground_alt": 0.0,
-    "line_thickness": 8,
+    "line_thickness": 4,
     "cache_overlay": true,
     "projector_kwargs": {
       "sensor_full_w_mm": 7.18,
@@ -29,7 +29,7 @@
       "output_url": "rtmp://10.1.129.99:1935/ai/camera-1002",
       "border_json": "config/borders/LuoJiaJiMPZ.json",
       "ground_alt": 0.0,
-      "line_thickness": 8,
+      "line_thickness": 4,
       "cache_overlay": true,
       "info": {
         "latitude": 28.6368333,
@@ -54,7 +54,7 @@
       "output_url": "rtmp://10.1.129.99:1935/ai/camera-1004",
       "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
       "ground_alt": 0.0,
-      "line_thickness": 8,
+      "line_thickness": 4,
       "cache_overlay": true,
       "info": {
         "latitude": 28.667369,
@@ -79,7 +79,7 @@
       "output_url": "rtmp://10.1.129.99:1935/ai/camera-1006",
       "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
       "ground_alt": 0.0,
-      "line_thickness": 8,
+      "line_thickness": 4,
       "cache_overlay": true,
       "info": {
         "latitude": 28.691636,
@@ -104,7 +104,7 @@
       "output_url": "rtmp://10.1.129.99:1935/ai/camera-1008",
       "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
       "ground_alt": 0.0,
-      "line_thickness": 8,
+      "line_thickness": 4,
       "cache_overlay": true,
       "info": {
         "latitude": 28.626413,
@@ -129,7 +129,7 @@
       "output_url": "rtmp://10.1.129.99:1935/ai/camera-1010",
       "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
       "ground_alt": 0.0,
-      "line_thickness": 8,
+      "line_thickness": 4,
       "cache_overlay": true,
       "info": {
         "latitude": 28.664172,
@@ -154,7 +154,7 @@
       "output_url": "rtmp://10.1.129.99:1935/ai/camera-1012",
       "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
       "ground_alt": 0.0,
-      "line_thickness": 8,
+      "line_thickness": 4,
       "cache_overlay": true,
       "info": {
         "latitude": 28.678300,
@@ -179,7 +179,7 @@
       "output_url": "rtmp://10.1.129.99:1935/ai/camera-1013",
       "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
       "ground_alt": 0.0,
-      "line_thickness": 8,
+      "line_thickness": 4,
       "cache_overlay": true,
       "info": {
         "latitude": 28.682327,
@@ -204,7 +204,7 @@
       "output_url": "rtmp://10.1.129.99:1935/ai/camera-1016",
       "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
       "ground_alt": 0.0,
-      "line_thickness": 8,
+      "line_thickness": 4,
       "cache_overlay": true,
       "info": {
         "latitude": 28.627228,
@@ -229,7 +229,7 @@
       "output_url": "rtmp://10.1.129.99:1935/ai/camera-1018",
       "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
       "ground_alt": 0.0,
-      "line_thickness": 8,
+      "line_thickness": 4,
       "cache_overlay": true,
       "info": {
         "latitude": 28.604400,
@@ -254,7 +254,7 @@
       "output_url": "rtmp://10.1.129.99:1935/ai/camera-1020",
       "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
       "ground_alt": 0.0,
-      "line_thickness": 8,
+      "line_thickness": 4,
       "cache_overlay": true,
       "info": {
         "latitude": 28.639623,
