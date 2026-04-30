@@ -1,0 +1,272 @@
+{
+  "enabled": true,
+  "description": "保护区界线投影配置。camera.py 会优先用 camera_id / URL中的 camera-xxxx / 中文名称匹配本文件中的 cameras。",
+  "default": {
+    "enabled": false,
+    "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
+    "ground_alt": 0.0,
+    "line_thickness": 8,
+    "cache_overlay": true,
+    "projector_kwargs": {
+      "sensor_full_w_mm": 7.18,
+      "sensor_full_h_mm": 5.32,
+      "sensor_crop_w_mm": 7.18,
+      "sensor_crop_h_mm": 4.04,
+      "expect_img_w": 1920,
+      "expect_img_h": 1080,
+      "assume_focal_is_35mm_equiv": null
+    }
+  },
+  "cameras": {
+    "camera-1002": {
+      "enabled": true,
+      "camera_name": "罗家集",
+      "aliases": [
+        "罗家集",
+        "camera-1002"
+      ],
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1002",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1002",
+      "border_json": "config/borders/LuoJiaJiMPZ.json",
+      "ground_alt": 0.0,
+      "line_thickness": 8,
+      "cache_overlay": true,
+      "info": {
+        "latitude": 28.6368333,
+        "longitude": 115.984629,
+        "height": 29.5,
+        "gimbal_yaw": 146.5,
+        "gimbal_pitch": -11.0,
+        "gimbal_roll": 0.0,
+        "zoom_factor": 1.16
+      },
+      "needs_completion": false,
+      "note": "参数已人工校准"
+    },
+    "camera-1004": {
+      "enabled": true,
+      "camera_name": "商储大厦",
+      "aliases": [
+        "商储大厦",
+        "camera-1004"
+      ],
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1004",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1004",
+      "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
+      "ground_alt": 0.0,
+      "line_thickness": 8,
+      "cache_overlay": true,
+      "info": {
+        "latitude": 28.667369,
+        "longitude": 115.910547,
+        "height": 45.0,
+        "gimbal_yaw": 272.0,
+        "gimbal_pitch": -22.0,
+        "gimbal_roll": 0.0,
+        "zoom_factor": 1.16
+      },
+      "needs_completion": true,
+      "note": "参数未校准"
+    },
+    "camera-1006": {
+      "enabled": true,
+      "camera_name": "世贸广场",
+      "aliases": [
+        "世贸广场",
+        "camera-1006"
+      ],
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1006",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1006",
+      "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
+      "ground_alt": 0.0,
+      "line_thickness": 8,
+      "cache_overlay": true,
+      "info": {
+        "latitude": 28.691636,
+        "longitude": 115.866668,
+        "height": 25.0,
+        "gimbal_yaw": 25.0,
+        "gimbal_pitch": -18.0,
+        "gimbal_roll": 0.0,
+        "zoom_factor": 2.32
+      },
+      "needs_completion": true,
+      "note": "参数未校准"
+    },
+    "camera-1008": {
+      "enabled": true,
+      "camera_name": "岗下江南郡",
+      "aliases": [
+        "岗下江南郡",
+        "camera-1008"
+      ],
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1008",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1008",
+      "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
+      "ground_alt": 0.0,
+      "line_thickness": 8,
+      "cache_overlay": true,
+      "info": {
+        "latitude": 28.626413,
+        "longitude": 115.983357,
+        "height": 80.0,
+        "gimbal_yaw": 322.0,
+        "gimbal_pitch": -16.0,
+        "gimbal_roll": 0.0,
+        "zoom_factor": 1.16
+      },
+      "needs_completion": true,
+      "note": "参数未校准"
+    },
+    "camera-1010": {
+      "enabled": true,
+      "camera_name": "中央香榭",
+      "aliases": [
+        "中央香榭",
+        "camera-1010"
+      ],
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1010",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1010",
+      "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
+      "ground_alt": 0.0,
+      "line_thickness": 8,
+      "cache_overlay": true,
+      "info": {
+        "latitude": 28.664172,
+        "longitude": 115.829165,
+        "height": 80.0,
+        "gimbal_yaw": 279.0,
+        "gimbal_pitch": -21.0,
+        "gimbal_roll": 0.0,
+        "zoom_factor": 1.16
+      },
+      "needs_completion": true,
+      "note": "参数未校准"
+    },
+    "camera-1012": {
+      "enabled": true,
+      "camera_name": "国动塔",
+      "aliases": [
+        "国动塔",
+        "camera-1012"
+      ],
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1012",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1012",
+      "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
+      "ground_alt": 0.0,
+      "line_thickness": 8,
+      "cache_overlay": true,
+      "info": {
+        "latitude": 28.678300,
+        "longitude": 115.822650,
+        "height": 20.0,
+        "gimbal_yaw": 314.0,
+        "gimbal_pitch": -16.0,
+        "gimbal_roll": 0.0,
+        "zoom_factor": 3.48
+      },
+      "needs_completion": true,
+      "note": "参数未校准"
+    },
+    "camera-1013": {
+      "enabled": true,
+      "camera_name": "龙王庙",
+      "aliases": [
+        "龙王庙",
+        "camera-1013"
+      ],
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1013",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1013",
+      "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
+      "ground_alt": 0.0,
+      "line_thickness": 8,
+      "cache_overlay": true,
+      "info": {
+        "latitude": 28.682327,
+        "longitude": 115.831350,
+        "height": 25.0,
+        "gimbal_yaw": 156.0,
+        "gimbal_pitch": -9.0,
+        "gimbal_roll": 0.0,
+        "zoom_factor": 1.16
+      },
+      "needs_completion": true,
+      "note": "参数未校准"
+    },
+    "camera-1016": {
+      "enabled": true,
+      "camera_name": "锦天府汉庭酒店",
+      "aliases": [
+        "锦天府汉庭酒店",
+        "camera-1016"
+      ],
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1016",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1016",
+      "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
+      "ground_alt": 0.0,
+      "line_thickness": 8,
+      "cache_overlay": true,
+      "info": {
+        "latitude": 28.627228,
+        "longitude": 115.797169,
+        "height": 20.0,
+        "gimbal_yaw": 171.0,
+        "gimbal_pitch": -11.0,
+        "gimbal_roll": 0.0,
+        "zoom_factor": 3.48
+      },
+      "needs_completion": true,
+      "note": "参数未校准"
+    },
+    "camera-1018": {
+      "enabled": true,
+      "camera_name": "绿地国际博览城",
+      "aliases": [
+        "绿地国际博览城",
+        "camera-1018"
+      ],
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1018",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1018",
+      "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
+      "ground_alt": 0.0,
+      "line_thickness": 8,
+      "cache_overlay": true,
+      "info": {
+        "latitude": 28.604400,
+        "longitude": 115.794500,
+        "height": 80.0,
+        "gimbal_yaw": 239.0,
+        "gimbal_pitch": -16.0,
+        "gimbal_roll": 0.0,
+        "zoom_factor": 1.16
+      },
+      "needs_completion": true,
+      "note": "参数未校准"
+    },
+    "camera-1020": {
+      "enabled": true,
+      "camera_name": "交投大厦旁国动塔",
+      "aliases": [
+        "交投大厦旁国动塔",
+        "camera-1020"
+      ],
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1020",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1020",
+      "border_json": "config/borders/NanchangLine2MPZ_20260403.json",
+      "ground_alt": 0.0,
+      "line_thickness": 8,
+      "cache_overlay": true,
+      "info": {
+        "latitude": 28.639623,
+        "longitude": 115.789522,
+        "height": 20.0,
+        "gimbal_yaw": 176.0,
+        "gimbal_pitch": -14.0,
+        "gimbal_roll": 0.0,
+        "zoom_factor": 1.16
+      },
+      "needs_completion": true,
+      "note": "参数未校准"
+    }
+  }
+}

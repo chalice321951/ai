@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 AI摄像头流检测主程序
@@ -7,9 +7,11 @@ AI摄像头流检测主程序
 
 import atexit
 import faulthandler
+import json
 import logging
 import multiprocessing
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -94,6 +96,17 @@ from stream.capture_process import CaptureProxy
 from inference.unified_scheduler import UnifiedInferenceScheduler
 from alert.alert_system import AlertSystem, create_count_threshold_rule, AlertLevel
 from tracking.simple_tracker import SimpleTracker
+
+# 保护区界线投影模块：正式部署版放在 utils/zone_projector.py。
+try:
+    from utils.zone_projector import CameraProjector as BoundaryCameraProjector
+except Exception:
+    # 兼容临时调试：如果文件被放在项目根目录，也尽量导入。
+    try:
+        from zone_projector import CameraProjector as BoundaryCameraProjector
+    except Exception:
+        BoundaryCameraProjector = None
+
 
 
 def _enable_fault_logging(log_dir: str = 'log'):
@@ -184,7 +197,25 @@ class StreamProcessor:
             min_iou=float(getattr(self.config, 'tracking_match_iou', 0.3) or 0.3),
         ) if bool(getattr(self.config, 'tracking_enabled', False)) else None
 
-        logging.info(f"[{self.name}] StreamProcessor 初始化完成")
+        # 保护区界线投影：每路流独立配置、独立 CameraProjector 实例。
+        # 推荐在 streams[].camera_id / streams[].stream_id 中显式写稳定ID，
+        # 然后在 config/camera_projector_config.json 中按该ID配置 info 与 border_json。
+        self.camera_identity = self._resolve_camera_identity()
+        self.boundary_projector_enabled = False
+        self.boundary_projector = None
+        self.boundary_projector_info = None
+        self.boundary_projector_border_json = None
+        self.boundary_projector_ground_alt = 0.0
+        self.boundary_projector_line_thickness = 8
+        self._last_boundary_projector_error_ts = 0.0
+        self.boundary_projector_cache_overlay = True
+        self._boundary_overlay_cache_key = None
+        self._boundary_overlay_cache_img = None
+        self._boundary_overlay_cache_mask = None
+        self._boundary_overlay_cache_lock = threading.Lock()
+        self._init_boundary_projector()
+
+        logging.info(f"[{self.name}] StreamProcessor 初始化完成, stream_key={self.stream_tracking_key}, camera_identity={self.camera_identity}")
 
     def _setup_alert_rules(self):
         cooldown = float(getattr(self.config, 'alarm_interval_seconds', 10.0))
@@ -199,6 +230,381 @@ class StreamProcessor:
         self.alert_system.add_rule(rule)
     def _build_capture_options(self) -> str:
         return self.config.get_capture_options(self.input_url)
+
+    @staticmethod
+    def _extract_camera_id_from_url(url_value) -> Optional[str]:
+        """从 rtmp/rtsp URL 中提取 camera-1002 这类稳定ID。"""
+        if url_value is None:
+            return None
+        s = str(url_value).strip()
+        if not s:
+            return None
+        m = re.search(r'(camera[-_]\d+)', s, flags=re.IGNORECASE)
+        if m:
+            return m.group(1).replace('_', '-').lower()
+        # 没有 camera-xxxx 时，取 URL 最后一段作为候选，但仅作为兜底。
+        try:
+            tail = s.rstrip('/').split('/')[-1].strip()
+            return tail or None
+        except Exception:
+            return None
+
+    def _resolve_camera_identity(self) -> str:
+        """返回用于匹配保护区投影配置的稳定摄像头/流ID。"""
+        parsed_input_id = self._extract_camera_id_from_url(self.input_url)
+        parsed_output_id = self._extract_camera_id_from_url(self.output_url)
+        candidates = [
+            self.stream_cfg.get('camera_id'),
+            self.stream_cfg.get('cameraId'),
+            self.stream_cfg.get('stream_id'),
+            self.stream_cfg.get('streamId'),
+            parsed_input_id,
+            parsed_output_id,
+            self.stream_cfg.get('monitorEq'),
+            self.stream_cfg.get('device_id'),
+            self.stream_cfg.get('deviceId'),
+            self.stream_cfg.get('taskId'),
+            self.name,
+            self.input_url,
+        ]
+        for value in candidates:
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return 'unknown'
+
+    def _projector_identity_candidates(self):
+        """按优先级返回可用于外部JSON匹配的候选键。"""
+        parsed_input_id = self._extract_camera_id_from_url(self.input_url)
+        parsed_output_id = self._extract_camera_id_from_url(self.output_url)
+        raw = [
+            self.stream_cfg.get('camera_id'),
+            self.stream_cfg.get('cameraId'),
+            self.stream_cfg.get('stream_id'),
+            self.stream_cfg.get('streamId'),
+            parsed_input_id,
+            parsed_output_id,
+            self.stream_cfg.get('monitorEq'),
+            self.stream_cfg.get('device_id'),
+            self.stream_cfg.get('deviceId'),
+            self.stream_cfg.get('taskId'),
+            self.name,
+            self.input_url,
+            self.output_url,
+            self.stream_tracking_key,
+        ]
+        out = []
+        seen = set()
+        for value in raw:
+            if value is None:
+                continue
+            s = str(value).strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+        return out
+
+    def _resolve_projector_path(self, path_value):
+        if path_value is None:
+            return None
+        p = str(path_value).strip()
+        if not p:
+            return None
+        if os.path.isabs(p):
+            return p
+        candidates = [
+            project_root / p,
+            project_root / 'config' / p,
+            project_root / 'config' / 'borders' / p,
+            project_root / 'projector' / p,
+            project_root / 'utils' / p,
+        ]
+        for c in candidates:
+            if c.exists():
+                return str(c)
+        # 找不到也返回 project_root 下的路径，让后续 FileNotFoundError 的日志更直观。
+        return str(project_root / p)
+
+    def _load_projector_external_config(self):
+        """读取独立的摄像头投影配置文件。不存在则返回空字典。"""
+        path_candidates = [
+            self.stream_cfg.get('camera_projector_config_path'),
+            self.stream_cfg.get('projector_config_path'),
+            getattr(self.config, 'camera_projector_config_path', None),
+            os.getenv('CAMERA_PROJECTOR_CONFIG'),
+            project_root / 'config' / 'camera_projector_config.json',
+            project_root / 'camera_projector_config.json',
+        ]
+        for p in path_candidates:
+            if not p:
+                continue
+            p = Path(str(p))
+            if not p.is_absolute():
+                p = project_root / p
+            if not p.exists():
+                continue
+            try:
+                with open(p, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                logging.info(f"[{self.name}] 已读取摄像头投影配置: {p}")
+                return data if isinstance(data, dict) else {}
+            except Exception as e:
+                logging.error(f"[{self.name}] 读取摄像头投影配置失败: {p}, err={e}")
+                return {}
+        return {}
+
+    def _match_projector_config(self) -> dict:
+        """
+        合并投影配置。优先级：
+        1. 外部 config/camera_projector_config.json 的 default
+        2. 外部 cameras/streams/projectors 中按 camera_id/stream_id/name/input_url 匹配的配置
+        3. 当前 streams[] 内联 projector/camera_projector/boundary_projector 配置
+        """
+        merged = {}
+        external = self._load_projector_external_config()
+        if isinstance(external, dict):
+            default_cfg = external.get('default') or external.get('defaults') or {}
+            if isinstance(default_cfg, dict):
+                merged.update(default_cfg)
+
+            table = None
+            for key in ('cameras', 'streams', 'projectors', 'camera_projectors'):
+                if isinstance(external.get(key), dict):
+                    table = external.get(key)
+                    break
+            if table is None and any(k in external for k in self._projector_identity_candidates()):
+                table = external
+            if isinstance(table, dict):
+                matched_directly = False
+                for candidate in self._projector_identity_candidates():
+                    matched = table.get(candidate)
+                    if isinstance(matched, dict):
+                        merged.update(matched)
+                        merged['_matched_key'] = candidate
+                        matched_directly = True
+                        break
+
+                # 允许配置项通过 aliases/camera_id/name/input_url 等字段反向匹配，
+                # 方便 camera_projector_config.json 使用 camera-1002 作主键，同时兼容中文名称。
+                if not matched_directly:
+                    candidates_set = set(self._projector_identity_candidates())
+                    for key, value in table.items():
+                        if not isinstance(value, dict):
+                            continue
+                        aliases = []
+                        for alias_key in ('aliases', 'alias', 'camera_id', 'cameraId', 'name', 'monitorEq', 'taskId', 'input_url', 'output_url'):
+                            alias_val = value.get(alias_key)
+                            if isinstance(alias_val, (list, tuple)):
+                                aliases.extend([str(x).strip() for x in alias_val if str(x).strip()])
+                            elif alias_val is not None and str(alias_val).strip():
+                                aliases.append(str(alias_val).strip())
+                        aliases.append(str(key).strip())
+                        # URL 里的 camera-xxxx 也纳入别名匹配。
+                        for url_key in ('input_url', 'output_url'):
+                            parsed = self._extract_camera_id_from_url(value.get(url_key))
+                            if parsed:
+                                aliases.append(parsed)
+                        if candidates_set.intersection(set(aliases)):
+                            merged.update(value)
+                            merged['_matched_key'] = str(key)
+                            break
+
+        inline = (
+            self.stream_cfg.get('projector')
+            or self.stream_cfg.get('camera_projector')
+            or self.stream_cfg.get('boundary_projector')
+            or self.stream_cfg.get('boundary_lines')
+        )
+        if isinstance(inline, dict):
+            merged.update(inline)
+
+        # 兼容把 border_json/info 直接写在 streams[] 顶层的情况。
+        top_level_keys = (
+            'border_json', 'border_json_path', 'ground_alt', 'line_thickness',
+            'info', 'camera_info', 'projector_enabled', 'boundary_projector_enabled'
+        )
+        for key in top_level_keys:
+            if key in self.stream_cfg and key not in merged:
+                merged[key] = self.stream_cfg[key]
+
+        return merged
+
+    def _coerce_projector_info(self, cfg: dict):
+        info = cfg.get('info') or cfg.get('camera_info') or cfg.get('cameraInfo')
+        if not isinstance(info, dict):
+            info = {}
+            for key in ('latitude', 'longitude', 'height', 'gimbal_yaw', 'gimbal_pitch', 'gimbal_roll', 'zoom_factor'):
+                if key in cfg:
+                    info[key] = cfg[key]
+        required = ('latitude', 'longitude', 'height', 'gimbal_yaw', 'gimbal_pitch', 'gimbal_roll', 'zoom_factor')
+        missing = [k for k in required if k not in info or info.get(k) in (None, '')]
+        if missing:
+            raise ValueError(f"投影 info 缺少字段: {missing}")
+        # 提前转成 float，避免每帧在 CameraProjector 内因字符串异常报错。
+        return {k: float(info[k]) for k in required}
+
+    def _init_boundary_projector(self):
+        cfg = self._match_projector_config()
+        has_any_cfg = bool(cfg)
+        enabled = bool(cfg.get('enabled', cfg.get('projector_enabled', cfg.get('boundary_projector_enabled', has_any_cfg))))
+        if not enabled:
+            return
+        if BoundaryCameraProjector is None:
+            logging.error(f"[{self.name}] 已配置保护区投影，但无法导入 utils.zone_projector.CameraProjector")
+            return
+        try:
+            border_json = cfg.get('border_json') or cfg.get('border_json_path') or cfg.get('borderJson')
+            border_json = self._resolve_projector_path(border_json)
+            if not border_json:
+                raise ValueError('缺少 border_json / border_json_path')
+            info = self._coerce_projector_info(cfg)
+            ground_alt = float(cfg.get('ground_alt', cfg.get('groundAlt', 0.0)) or 0.0)
+            line_thickness = int(cfg.get('line_thickness', cfg.get('lineThickness', 8)) or 8)
+            cache_overlay = bool(cfg.get('cache_overlay', cfg.get('cacheOverlay', True)))
+
+            projector_kwargs = cfg.get('projector_kwargs') or cfg.get('projectorKwargs') or {}
+            if not isinstance(projector_kwargs, dict):
+                projector_kwargs = {}
+            self.boundary_projector = BoundaryCameraProjector(**projector_kwargs)
+            self.boundary_projector_info = info
+            self.boundary_projector_border_json = border_json
+            self.boundary_projector_ground_alt = ground_alt
+            self.boundary_projector_line_thickness = max(1, line_thickness)
+            self.boundary_projector_cache_overlay = cache_overlay
+            self.boundary_projector_enabled = True
+
+            # 如果 API 支持缓存，启动时预热一次 JSON，避免第一帧卡顿。
+            try:
+                if hasattr(self.boundary_projector, '_load_curves_cached'):
+                    self.boundary_projector._load_curves_cached(border_json)
+            except Exception as e:
+                logging.warning(f"[{self.name}] 预加载保护区界线JSON失败，后续绘制时会再次尝试: {e}")
+
+            logging.info(
+                f"[{self.name}] 保护区界线投影已启用: camera_identity={self.camera_identity}, "
+                f"matched_key={cfg.get('_matched_key', '(inline/default)')}, border_json={border_json}, "
+                f"ground_alt={ground_alt}, line_thickness={self.boundary_projector_line_thickness}"
+            )
+        except Exception as e:
+            self.boundary_projector_enabled = False
+            self.boundary_projector = None
+            logging.error(f"[{self.name}] 初始化保护区界线投影失败: {e}")
+
+    def _boundary_overlay_key(self, frame: np.ndarray):
+        """生成保护区界线缓存键：相机参数、图像尺寸、边界文件修改时间任何一项变化都会失效。"""
+        if frame is None:
+            return None
+        h, w = frame.shape[:2]
+        try:
+            st = os.stat(self.boundary_projector_border_json)
+            file_sig = (os.path.abspath(self.boundary_projector_border_json), int(st.st_mtime_ns), int(st.st_size))
+        except Exception:
+            file_sig = (str(self.boundary_projector_border_json), None, None)
+        info_items = tuple(
+            (k, round(float(self.boundary_projector_info[k]), 8))
+            for k in sorted(self.boundary_projector_info.keys())
+        )
+        try:
+            projector_sig = (
+                round(float(getattr(self.boundary_projector, 'sensor_full_w', 0.0)), 8),
+                round(float(getattr(self.boundary_projector, 'sensor_full_h', 0.0)), 8),
+                round(float(getattr(self.boundary_projector, 'sensor_crop_w', 0.0)), 8),
+                round(float(getattr(self.boundary_projector, 'sensor_crop_h', 0.0)), 8),
+            )
+        except Exception:
+            projector_sig = ()
+        return (
+            self.camera_identity,
+            int(w), int(h),
+            file_sig,
+            info_items,
+            round(float(self.boundary_projector_ground_alt), 8),
+            int(self.boundary_projector_line_thickness),
+            projector_sig,
+        )
+
+    @staticmethod
+    def _apply_boundary_overlay(frame: np.ndarray, overlay: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        if overlay is None or mask is None:
+            return frame
+        if frame.shape[:2] != overlay.shape[:2] or frame.shape[:2] != mask.shape[:2]:
+            return frame
+        frame[mask] = overlay[mask]
+        return frame
+
+    def _build_boundary_overlay(self, frame: np.ndarray) -> tuple:
+        overlay = np.zeros_like(frame, dtype=np.uint8)
+        try:
+            _, overlay = self.boundary_projector.project_points_from_json(
+                self.boundary_projector_border_json,
+                self.boundary_projector_info,
+                overlay,
+                ground_alt=self.boundary_projector_ground_alt,
+                line_thickness=self.boundary_projector_line_thickness,
+                use_cache=True,
+                draw=True,
+            )
+        except TypeError:
+            # 兼容旧签名，不过正式部署版 utils.zone_projector 支持 line_thickness/use_cache。
+            _, overlay = self.boundary_projector.project_points_from_json(
+                self.boundary_projector_border_json,
+                self.boundary_projector_info,
+                overlay,
+                ground_alt=self.boundary_projector_ground_alt,
+            )
+        mask = np.any(overlay != 0, axis=2)
+        return np.ascontiguousarray(overlay, dtype=np.uint8), mask
+
+    def _draw_boundary_projector(self, frame: np.ndarray, fid: Optional[int] = None) -> np.ndarray:
+        if not self.boundary_projector_enabled or self.boundary_projector is None:
+            return frame
+        try:
+            if not self.boundary_projector_cache_overlay:
+                # 关闭 overlay 缓存时，仍直接在当前帧上投影绘制。
+                try:
+                    _, out = self.boundary_projector.project_points_from_json(
+                        self.boundary_projector_border_json,
+                        self.boundary_projector_info,
+                        frame,
+                        ground_alt=self.boundary_projector_ground_alt,
+                        line_thickness=self.boundary_projector_line_thickness,
+                        use_cache=True,
+                    )
+                except TypeError:
+                    _, out = self.boundary_projector.project_points_from_json(
+                        self.boundary_projector_border_json,
+                        self.boundary_projector_info,
+                        frame,
+                        ground_alt=self.boundary_projector_ground_alt,
+                    )
+                return out
+
+            cache_key = self._boundary_overlay_key(frame)
+            with self._boundary_overlay_cache_lock:
+                cache_valid = (
+                    cache_key is not None
+                    and cache_key == self._boundary_overlay_cache_key
+                    and self._boundary_overlay_cache_img is not None
+                    and self._boundary_overlay_cache_mask is not None
+                )
+                if not cache_valid:
+                    overlay, mask = self._build_boundary_overlay(frame)
+                    self._boundary_overlay_cache_key = cache_key
+                    self._boundary_overlay_cache_img = overlay
+                    self._boundary_overlay_cache_mask = mask
+                    if np.any(mask):
+                        logging.info(f"[{self.name}] 保护区界线投影缓存已更新 fid={fid}, camera_identity={self.camera_identity}")
+                    else:
+                        logging.info(f"[{self.name}] 保护区界线投影缓存已更新但当前画面无可见线段 fid={fid}, camera_identity={self.camera_identity}")
+                overlay = self._boundary_overlay_cache_img
+                mask = self._boundary_overlay_cache_mask
+            return self._apply_boundary_overlay(frame, overlay, mask)
+        except Exception as e:
+            now = time.time()
+            if now - self._last_boundary_projector_error_ts >= 5.0:
+                logging.error(f"[{self.name}] 绘制保护区界线失败 fid={fid}: {e}")
+                self._last_boundary_projector_error_ts = now
+            return frame
 
 
     def _on_capture_status(self, stream_id: str, status: str):
@@ -461,6 +867,7 @@ class StreamProcessor:
                 )
 
             rendered_frame = frame.copy()
+            rendered_frame = self._draw_boundary_projector(rendered_frame, fid=fid)
             if self._last_detection_overlays:
                 rendered_frame = self._draw_detection_overlays(rendered_frame, self._last_detection_overlays)
             rendered_frame = self._draw_ai_badge(rendered_frame, fid=fid)
@@ -545,6 +952,7 @@ class StreamProcessor:
             return None
 
         confirmed_frame = reference_frame.copy()
+        confirmed_frame = self._draw_boundary_projector(confirmed_frame, fid=fid)
         if overlays:
             confirmed_frame = self._draw_detection_overlays(confirmed_frame, overlays)
         confirmed_frame = self._draw_ai_badge(confirmed_frame, fid=fid)
@@ -1140,7 +1548,8 @@ def main():
     for s in stream_list:
         input_url = s.get('input_url') or s.get('rtsp_url') or s.get('rtmp_url', '')
         output_url = s.get('output_url') or s.get('output_rtsp') or s.get('output_rtmp') or '(无推流)'
-        logging.info(f"  [{s.get('name')}] {input_url} -> {output_url}")
+        camera_id = s.get('camera_id') or s.get('cameraId') or s.get('stream_id') or s.get('streamId') or s.get('monitorEq') or s.get('taskId') or s.get('name')
+        logging.info(f"  [{s.get('name')}] camera_id={camera_id} {input_url} -> {output_url}")
 
     if config.push_enabled:
         push_dev = config.get_push_device()
