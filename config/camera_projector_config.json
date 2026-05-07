@@ -57,16 +57,16 @@
       "line_thickness": 4,
       "cache_overlay": true,
       "info": {
-        "latitude": 28.667369,
-        "longitude": 115.910547,
+        "latitude": 28.6673361,
+        "longitude": 115.9109626,
         "height": 45.0,
-        "gimbal_yaw": 272.0,
+        "gimbal_yaw": 272.27,
         "gimbal_pitch": -22.0,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.16
       },
       "needs_completion": true,
-      "note": "参数未校准"
+      "note": "参数已校准byLXP"
     },
     "camera-1006": {
       "enabled": true,
@@ -82,16 +82,16 @@
       "line_thickness": 4,
       "cache_overlay": true,
       "info": {
-        "latitude": 28.691636,
-        "longitude": 115.866668,
+        "latitude": 28.6956047,
+        "longitude": 115.8621492,
         "height": 25.0,
-        "gimbal_yaw": 25.0,
+        "gimbal_yaw": 143.9,
         "gimbal_pitch": -18.0,
         "gimbal_roll": 0.0,
         "zoom_factor": 2.32
       },
       "needs_completion": true,
-      "note": "参数未校准"
+      "note": "参数已校准byLXP"
     },
     "camera-1008": {
       "enabled": true,
@@ -107,16 +107,16 @@
       "line_thickness": 4,
       "cache_overlay": true,
       "info": {
-        "latitude": 28.626413,
-        "longitude": 115.983357,
+        "latitude": 28.6263936,
+        "longitude": 115.9833856,
         "height": 80.0,
-        "gimbal_yaw": 322.0,
+        "gimbal_yaw": 10.94,
         "gimbal_pitch": -16.0,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.16
       },
       "needs_completion": true,
-      "note": "参数未校准"
+      "note": "参数已校准byLXP"
     },
     "camera-1010": {
       "enabled": true,
@@ -132,16 +132,16 @@
       "line_thickness": 4,
       "cache_overlay": true,
       "info": {
-        "latitude": 28.664172,
-        "longitude": 115.829165,
+        "latitude": 28.6636626,
+        "longitude": 115.8291056,
         "height": 80.0,
-        "gimbal_yaw": 279.0,
+        "gimbal_yaw": 311.22,
         "gimbal_pitch": -21.0,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.16
       },
       "needs_completion": true,
-      "note": "参数未校准"
+      "note": "参数已校准byLXP"
     },
     "camera-1012": {
       "enabled": true,
@@ -157,16 +157,16 @@
       "line_thickness": 4,
       "cache_overlay": true,
       "info": {
-        "latitude": 28.678300,
-        "longitude": 115.822650,
+        "latitude": 28.6875022,
+        "longitude": 115.8303731,
         "height": 20.0,
-        "gimbal_yaw": 314.0,
+        "gimbal_yaw": 116.01,
         "gimbal_pitch": -16.0,
         "gimbal_roll": 0.0,
         "zoom_factor": 3.48
       },
       "needs_completion": true,
-      "note": "参数未校准"
+      "note": "参数已校准byLXP"
     },
     "camera-1013": {
       "enabled": true,
@@ -182,16 +182,16 @@
       "line_thickness": 4,
       "cache_overlay": true,
       "info": {
-        "latitude": 28.682327,
-        "longitude": 115.831350,
+        "latitude": 28.6802214,
+        "longitude": 115.8357363,
         "height": 25.0,
-        "gimbal_yaw": 156.0,
+        "gimbal_yaw": 296.85,
         "gimbal_pitch": -9.0,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.16
       },
       "needs_completion": true,
-      "note": "参数未校准"
+      "note": "参数已校准byLXP"
     },
     "camera-1016": {
       "enabled": true,
@@ -207,16 +207,16 @@
       "line_thickness": 4,
       "cache_overlay": true,
       "info": {
-        "latitude": 28.627228,
-        "longitude": 115.797169,
+        "latitude": 28.6271633,
+        "longitude": 115.7972133,
         "height": 20.0,
-        "gimbal_yaw": 171.0,
+        "gimbal_yaw": 115.0,
         "gimbal_pitch": -11.0,
         "gimbal_roll": 0.0,
         "zoom_factor": 3.48
       },
       "needs_completion": true,
-      "note": "参数未校准"
+      "note": "参数已校准byLXP"
     },
     "camera-1018": {
       "enabled": true,
@@ -232,16 +232,16 @@
       "line_thickness": 4,
       "cache_overlay": true,
       "info": {
-        "latitude": 28.604400,
-        "longitude": 115.794500,
+        "latitude": 28.6062171,
+        "longitude": 115.7978269,
         "height": 80.0,
-        "gimbal_yaw": 239.0,
+        "gimbal_yaw": 237.0,
         "gimbal_pitch": -16.0,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.16
       },
       "needs_completion": true,
-      "note": "参数未校准"
+      "note": "参数已校准byLXP"
     },
     "camera-1020": {
       "enabled": true,
@@ -257,16 +257,16 @@
       "line_thickness": 4,
       "cache_overlay": true,
       "info": {
-        "latitude": 28.639623,
-        "longitude": 115.789522,
+        "latitude": 28.6395599,
+        "longitude": 115.7895614,
         "height": 20.0,
-        "gimbal_yaw": 176.0,
+        "gimbal_yaw": 105.27,
         "gimbal_pitch": -14.0,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.16
       },
       "needs_completion": true,
-      "note": "参数未校准"
+      "note": "参数已校准byLXP"
     }
   }
 }
