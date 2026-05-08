@@ -209,7 +209,7 @@
       "info": {
         "latitude": 28.6271633,
         "longitude": 115.7972133,
-        "height": 20.0,
+        "height": 40.0,
         "gimbal_yaw": 115.0,
         "gimbal_pitch": -11.0,
         "gimbal_roll": 0.0,
@@ -262,6 +262,31 @@
         "height": 20.0,
         "gimbal_yaw": 105.27,
         "gimbal_pitch": -14.0,
+        "gimbal_roll": 0.0,
+        "zoom_factor": 1.16
+      },
+      "needs_completion": true,
+      "note": "参数已校准byLXP"
+    },
+    "camera-1022": {
+      "enabled": true,
+      "camera_name": "东湖急救中心",
+      "aliases": [
+        "东湖急救中心",
+        "camera-1022"
+      ],
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1022",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1022",
+      "border_json": "config/borders/NanchangLine2MPZ_20260508.json",
+      "ground_alt": 0.0,
+      "line_thickness": 4,
+      "cache_overlay": true,
+      "info": {
+        "latitude": 28.6897235,
+        "longitude": 115.8791163,
+        "height": 30.0,
+        "gimbal_yaw": 57.44,
+        "gimbal_pitch": -25.0,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.16
       },
