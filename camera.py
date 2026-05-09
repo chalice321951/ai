@@ -28,7 +28,7 @@ import numpy as np
 # ── 全局 NVENC 会话计数器 ──
 _nvenc_lock = threading.Lock()
 _nvenc_count = 0
-_NVENC_MAX_SESSIONS = 10  # 当前按 10 路压测，超出后自动回退 libx264
+_NVENC_MAX_SESSIONS = 11  # 当前按 10 路压测，超出后自动回退 libx264
 
 def _terminate_subprocess(proc: Optional[subprocess.Popen], timeout: float = 3.0):
     if proc is None:
