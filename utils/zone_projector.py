@@ -317,9 +317,15 @@ class CameraProjector:
                 p0 = self._safe_int_point(u1, v1, SAFE_INT_ABS)
                 p1 = self._safe_int_point(u2, v2, SAFE_INT_ABS)
 
+                ok, q0, q1 = cv2.clipLine((0, 0, int(img_w), int(img_h)), p0, p1)
+                if not ok:
+                    continue
+
+                q0 = (int(q0[0]), int(q0[1]))
+                q1 = (int(q1[0]), int(q1[1]))
                 if draw:
-                    cv2.line(img, p0, p1, color, thickness)
-                curve_segments.append({"u1": p0[0], "v1": p0[1], "u2": p1[0], "v2": p1[1]})
+                    cv2.line(img, q0, q1, color, thickness)
+                curve_segments.append({"u1": q0[0], "v1": q0[1], "u2": q1[0], "v2": q1[1]})
 
             results[cid] = curve_segments
 

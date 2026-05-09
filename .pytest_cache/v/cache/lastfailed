@@ -1,1 +1,3 @@
-{}
+{
+  "tests/test_alarm_level.py::TestAlarmLevel": true
+}

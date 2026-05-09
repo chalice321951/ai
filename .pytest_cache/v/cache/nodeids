@@ -3,5 +3,6 @@
   "tests/test_alarm_level.py::TestAlarmLevel::test_multi_line_uses_band_level",
   "tests/test_alarm_level.py::TestAlarmLevel::test_outside_orange_returns_none",
   "tests/test_alarm_level.py::TestAlarmLevel::test_single_line_uses_color_level",
+  "tests/test_alarm_level.py::TestAlarmLevel::test_zone_projector_returns_clipped_visible_segments",
   "tests/test_platform_alarm_level.py::TestPlatformAlarmLevel::test_payload_prefers_dynamic_alarm_level"
 ]
