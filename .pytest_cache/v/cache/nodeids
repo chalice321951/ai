@@ -1,4 +1,7 @@
 [
-  "tests/test_alert_track_dedupe.py::test_same_track_id_alerts_only_once",
-  "tests/test_alert_track_dedupe.py::test_new_track_id_can_alert_again"
+  "tests/test_alarm_level.py::TestAlarmLevel::test_can_use_colors_from_border_json",
+  "tests/test_alarm_level.py::TestAlarmLevel::test_multi_line_uses_band_level",
+  "tests/test_alarm_level.py::TestAlarmLevel::test_outside_orange_returns_none",
+  "tests/test_alarm_level.py::TestAlarmLevel::test_single_line_uses_color_level",
+  "tests/test_platform_alarm_level.py::TestPlatformAlarmLevel::test_payload_prefers_dynamic_alarm_level"
 ]

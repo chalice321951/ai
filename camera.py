@@ -19,7 +19,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import cv2
@@ -96,6 +96,7 @@ from stream.capture_process import CaptureProxy
 from inference.unified_scheduler import UnifiedInferenceScheduler
 from alert.alert_system import AlertSystem, create_count_threshold_rule, AlertLevel
 from tracking.simple_tracker import SimpleTracker
+from utils.alarm_level import classify_point_alarm_level_uv_details
 
 # 保护区界线投影模块：正式部署版放在 utils/zone_projector.py。
 try:
@@ -612,6 +613,41 @@ class StreamProcessor:
             return frame
 
 
+    def _project_boundary_curves_for_frame(self, frame: np.ndarray):
+        if (
+            frame is None
+            or not self.boundary_projector_enabled
+            or self.boundary_projector is None
+            or not self.boundary_projector_border_json
+            or not self.boundary_projector_info
+        ):
+            return None
+        canvas = np.zeros_like(frame, dtype=np.uint8)
+        try:
+            projected_curves, _ = self.boundary_projector.project_points_from_json(
+                self.boundary_projector_border_json,
+                self.boundary_projector_info,
+                canvas,
+                ground_alt=self.boundary_projector_ground_alt,
+                line_thickness=self.boundary_projector_line_thickness,
+                use_cache=True,
+                draw=False,
+            )
+            return projected_curves
+        except TypeError:
+            try:
+                projected_curves, _ = self.boundary_projector.project_points_from_json(
+                    self.boundary_projector_border_json,
+                    self.boundary_projector_info,
+                    canvas,
+                    ground_alt=self.boundary_projector_ground_alt,
+                )
+                return projected_curves
+            except Exception:
+                return None
+        except Exception:
+            return None
+
     def _on_capture_status(self, stream_id: str, status: str):
         """拉流子进程状态回调"""
         status_map = {
@@ -956,20 +992,82 @@ class StreamProcessor:
         if reference_frame is None:
             return None
 
+        projected_curves = self._project_boundary_curves_for_frame(reference_frame)
         confirmed_frame = reference_frame.copy()
         confirmed_frame = self._draw_boundary_projector(confirmed_frame, fid=fid)
         if overlays:
             confirmed_frame = self._draw_detection_overlays(confirmed_frame, overlays)
         confirmed_frame = self._draw_ai_badge(confirmed_frame, fid=fid)
+        target_info = self._build_alert_target_info(overlays, self._last_tracking_summary, projected_curves)
+        if not bool(target_info.get('should_alert')):
+            return None
         return {
             'frame': confirmed_frame,
             'detection_dict': {
-                'alarm_any_detection': float(self._last_tracking_summary.get('track_count', 0)),
+                'alarm_any_detection': float(target_info.get('track_count', 0)),
             },
-            'target_info': self._build_alert_target_info(overlays, self._last_tracking_summary),
+            'target_info': target_info,
         }
 
-    def _build_alert_target_info(self, overlays, tracking_summary):
+    @staticmethod
+    def _coerce_alarm_level_value(level_value: Any, default: str = "3") -> str:
+        try:
+            level_int = int(level_value)
+        except Exception:
+            return str(default)
+        if level_int not in (1, 2, 3, 4):
+            return str(default)
+        return str(level_int)
+
+    @staticmethod
+    def _extract_overlay_target_candidate(overlay: dict) -> Optional[Dict[str, Any]]:
+        if not isinstance(overlay, dict):
+            return None
+        xyxy = tuple(overlay.get('xyxy', ()) or ())
+        if len(xyxy) != 4:
+            return None
+        try:
+            x1, y1, x2, y2 = [int(v) for v in xyxy]
+        except Exception:
+            return None
+        return {
+            'bbox': [x1, y1, x2, y2],
+            'u': (float(x1) + float(x2)) * 0.5,
+            'v': float(y2),
+            'class_name': str(overlay.get('class_name', '') or '').strip() or 'unknown',
+            'track_id': overlay.get('track_id'),
+            'confidence': float(overlay.get('confidence', 0.0) or 0.0),
+            'algo_id': str(overlay.get('algo_id', '') or ''),
+        }
+
+    def _resolve_overlay_alarm_level(
+        self,
+        target_info: Optional[Dict[str, Any]],
+        projected_curves,
+    ) -> Tuple[Optional[str], str, Dict[str, Any]]:
+        if not isinstance(target_info, dict):
+            return None, "no_target", {}
+        if not projected_curves or not self.boundary_projector_border_json:
+            return None, "no_projected_curves", {}
+        try:
+            point_uv = (float(target_info.get('u')), float(target_info.get('v')))
+            level_details = classify_point_alarm_level_uv_details(
+                point_uv,
+                projected_curves=projected_curves,
+                border_json_path=self.boundary_projector_border_json,
+            )
+            if level_details.get("alarm_level") is None:
+                return None, str(level_details.get("reason") or "outside_orange_or_unresolved"), level_details
+            return (
+                self._coerce_alarm_level_value(level_details.get("alarm_level")),
+                str(level_details.get("reason") or "uv_projected_curves"),
+                level_details,
+            )
+        except Exception as e:
+            logging.debug(f"[{self.name}] 目标报警等级计算异常: {e}")
+            return None, "error", {}
+
+    def _build_alert_target_info(self, overlays, tracking_summary, projected_curves=None):
         overlay_classes = sorted({
             str(o.get('class_name', '')).strip()
             for o in overlays or []
@@ -985,8 +1083,43 @@ class StreamProcessor:
                     'xyxy': [int(v) for v in xyxy],
                     'color': [int(v) for v in color],
                 })
-        track_count = int((tracking_summary or {}).get('track_count', 0) or 0)
-        return {
+        target_candidates: List[Dict[str, Any]] = []
+        for overlay in overlays or []:
+            candidate = self._extract_overlay_target_candidate(overlay)
+            if not candidate:
+                continue
+            alarm_level, alarm_level_source, alarm_level_diag = self._resolve_overlay_alarm_level(candidate, projected_curves)
+            boundaries_preview = list((alarm_level_diag or {}).get('boundaries') or [])[:4]
+            logging.info(
+                f"[{self.name}] [alarm_level_candidate] "
+                f"class={candidate.get('class_name')} "
+                f"track_id={candidate.get('track_id')} "
+                f"bbox={candidate.get('bbox')} "
+                f"point=({candidate.get('u')},{candidate.get('v')}) "
+                f"level={alarm_level} "
+                f"reason={alarm_level_source} "
+                f"visible_colors={(alarm_level_diag or {}).get('visible_colors')} "
+                f"scan_y={(alarm_level_diag or {}).get('matched_scan_y')} "
+                f"boundaries={boundaries_preview}"
+            )
+            if alarm_level is None:
+                continue
+            candidate['alarm_level'] = str(alarm_level)
+            candidate['alarm_level_source'] = str(alarm_level_source)
+            candidate['alarm_level_visible_colors'] = list((alarm_level_diag or {}).get('visible_colors') or [])
+            candidate['alarm_level_scan_y'] = (alarm_level_diag or {}).get('matched_scan_y')
+            candidate['alarm_level_boundaries'] = list((alarm_level_diag or {}).get('boundaries') or [])
+            target_candidates.append(candidate)
+
+        target_candidates.sort(
+            key=lambda item: (
+                int(item.get('alarm_level', '3')),
+                0 if item.get('track_id') not in (None, '') else 1,
+                -float(item.get('confidence', 0.0) or 0.0),
+            )
+        )
+        track_count = int(len(target_candidates)) if target_candidates else 0
+        out = {
             'classes': class_text,
             'class_name': class_text,
             'count': track_count,
@@ -994,7 +1127,46 @@ class StreamProcessor:
             'track_ids': list((tracking_summary or {}).get('track_ids', []) or []),
             'tracking_enabled': bool(getattr(self.config, 'tracking_enabled', False)),
             '_validation_boxes': validation_boxes,
+            'target_candidates': target_candidates,
+            'alarm_level': None,
+            'alarm_level_source': 'outside_orange_or_unresolved',
+            'should_alert': bool(target_candidates),
         }
+        if target_candidates:
+            selected_candidate = target_candidates[0]
+            out.update({
+                'class_name': str(selected_candidate.get('class_name') or class_text),
+                'alarm_level': str(selected_candidate.get('alarm_level')),
+                'alarm_level_source': str(selected_candidate.get('alarm_level_source')),
+                'bbox': list(selected_candidate.get('bbox') or []),
+                'u': selected_candidate.get('u'),
+                'v': selected_candidate.get('v'),
+                'track_id': selected_candidate.get('track_id'),
+                'confidence': selected_candidate.get('confidence'),
+                'alarm_level_visible_colors': list(selected_candidate.get('alarm_level_visible_colors') or []),
+                'alarm_level_scan_y': selected_candidate.get('alarm_level_scan_y'),
+                'alarm_level_boundaries': list(selected_candidate.get('alarm_level_boundaries') or []),
+            })
+            logging.info(
+                f"[{self.name}] [alarm_level_selected] "
+                f"class={out.get('class_name')} "
+                f"track_id={out.get('track_id')} "
+                f"bbox={out.get('bbox')} "
+                f"point=({out.get('u')},{out.get('v')}) "
+                f"level={out.get('alarm_level')} "
+                f"reason={out.get('alarm_level_source')} "
+                f"visible_colors={out.get('alarm_level_visible_colors')} "
+                f"scan_y={out.get('alarm_level_scan_y')} "
+                f"boundaries={list(out.get('alarm_level_boundaries') or [])[:4]} "
+                f"candidate_count={len(target_candidates)}"
+            )
+        else:
+            logging.info(
+                f"[{self.name}] [alarm_level_suppressed] "
+                f"reason=outside_orange_or_unresolved "
+                f"raw_candidate_count={len(overlays or [])}"
+            )
+        return out
 
     def _on_status_change(self, stream_id: str, status: VideoStreamStatus):
         self._last_capture_status = status.value

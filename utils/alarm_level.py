@@ -1,0 +1,504 @@
+# -*- coding: utf-8 -*-
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from typing import Any, Dict, List, Optional, Tuple
+
+
+_BOUNDARY_CURVE_RE = re.compile(
+    r"^(?P<side>inside|outside)_border_(?P<offset>-?\d+(?:\.\d+)?)m_(?P<segment>\d+)$",
+    re.IGNORECASE,
+)
+_BOUNDARY_RULES_CACHE: Dict[str, Dict[str, Any]] = {}
+_COLOR_NAME_BY_BGR = {
+    (0, 0, 255): "red",
+    (0, 255, 255): "yellow",
+    (38, 167, 255): "orange",
+    (0, 255, 0): "green",
+}
+_LEVEL_BY_COLOR = {
+    "red": 1,
+    "yellow": 2,
+    "orange": 3,
+}
+
+
+def parse_boundary_curve_id(curve_id: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(curve_id, str):
+        return None
+    match = _BOUNDARY_CURVE_RE.match(curve_id.strip())
+    if not match:
+        return None
+    try:
+        return {
+            "side": str(match.group("side")).lower(),
+            "offset_m": float(match.group("offset")),
+            "segment": int(match.group("segment")),
+        }
+    except Exception:
+        return None
+
+
+def _normalize_bgr(color: Any) -> Optional[Tuple[int, int, int]]:
+    if not isinstance(color, (list, tuple)) or len(color) != 3:
+        return None
+    try:
+        return int(color[0]), int(color[1]), int(color[2])
+    except Exception:
+        return None
+
+
+def _color_name_from_bgr(color: Any) -> Optional[str]:
+    return _COLOR_NAME_BY_BGR.get(_normalize_bgr(color))
+
+
+def _extract_curve_color_name(points: Any, fallback_color: Any = None) -> Optional[str]:
+    color_name = _color_name_from_bgr(fallback_color)
+    if color_name:
+        return color_name
+    if not isinstance(points, list):
+        return None
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+        color_name = _color_name_from_bgr(point.get("color_bgr"))
+        if color_name:
+            return color_name
+    return None
+
+
+def _extract_curve_uv_points(points: Any) -> List[Tuple[int, int]]:
+    out: List[Tuple[int, int]] = []
+    if not isinstance(points, list):
+        return out
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+        if "u" in point and "v" in point:
+            try:
+                out.append((int(point.get("u")), int(point.get("v"))))
+            except Exception:
+                continue
+            continue
+        if all(key in point for key in ("u1", "v1", "u2", "v2")):
+            try:
+                out.append((int(point.get("u1")), int(point.get("v1"))))
+                out.append((int(point.get("u2")), int(point.get("v2"))))
+            except Exception:
+                continue
+    return _dedupe_consecutive_points(out)
+
+
+def _dedupe_consecutive_points(points: List[Tuple[Any, Any]]) -> List[Tuple[Any, Any]]:
+    out: List[Tuple[Any, Any]] = []
+    for point in points or []:
+        if not out or out[-1] != point:
+            out.append(point)
+    return out
+
+
+def _distance_sq(a: Tuple[Any, Any], b: Tuple[Any, Any]) -> float:
+    dx = float(a[0]) - float(b[0])
+    dy = float(a[1]) - float(b[1])
+    return dx * dx + dy * dy
+
+
+def _merge_polylines_by_endpoints(lines: List[List[Tuple[Any, Any]]]) -> List[Tuple[Any, Any]]:
+    pending = [_dedupe_consecutive_points(list(line)) for line in (lines or []) if len(line) >= 2]
+    if not pending:
+        return []
+
+    merged = pending.pop(0)
+    while pending:
+        best_idx = -1
+        best_candidate: List[Tuple[Any, Any]] = []
+        best_distance = None
+        for idx, line in enumerate(pending):
+            for candidate in (line, list(reversed(line))):
+                dist = _distance_sq(merged[-1], candidate[0])
+                if best_distance is None or dist < best_distance:
+                    best_idx = idx
+                    best_candidate = candidate
+                    best_distance = dist
+        if best_idx < 0:
+            break
+        pending.pop(best_idx)
+        if merged[-1] == best_candidate[0]:
+            merged.extend(best_candidate[1:])
+        else:
+            merged.extend(best_candidate)
+        merged = _dedupe_consecutive_points(merged)
+    return merged
+
+
+def _parse_geo_curve_points(points: Any) -> List[Tuple[float, float]]:
+    out: List[Tuple[float, float]] = []
+    if not isinstance(points, list):
+        return out
+    for point in points:
+        if not isinstance(point, str):
+            continue
+        try:
+            lon, lat, _alt = map(float, point.split(","))
+        except Exception:
+            continue
+        out.append((lon, lat))
+    return out
+
+
+def _build_geo_polyline_from_segments(segments: Dict[int, List[Tuple[float, float]]]) -> List[Tuple[float, float]]:
+    ordered = [segments.get(seg_id) or [] for seg_id in sorted(segments.keys())]
+    return _merge_polylines_by_endpoints(ordered)
+
+
+def curve_colors_from_border_file(border_json_path: str) -> Dict[str, str]:
+    path = str(border_json_path or "").strip()
+    if not path:
+        return {}
+    try:
+        mtime = float(os.path.getmtime(path))
+    except Exception:
+        mtime = None
+    cached = _BOUNDARY_RULES_CACHE.get(path)
+    if cached is not None and cached.get("_cache_mtime") == mtime:
+        rules = cached.get("rules") or {}
+        colors = rules.get("curve_colors") if isinstance(rules, dict) else {}
+        return colors if isinstance(colors, dict) else {}
+
+    curve_colors: Dict[str, str] = {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            items = json.load(fh)
+    except Exception:
+        _BOUNDARY_RULES_CACHE[path] = {"_cache_mtime": mtime, "rules": {"curve_colors": {}}}
+        return {}
+
+    grouped: Dict[Tuple[str, float], Dict[int, List[Tuple[float, float]]]] = {}
+    key_colors: Dict[Tuple[str, float], str] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        curve_id = item.get("curve_id")
+        parsed = parse_boundary_curve_id(curve_id)
+        color_name = _extract_curve_color_name([], fallback_color=item.get("color_bgr"))
+        if isinstance(curve_id, str) and color_name:
+            curve_colors[curve_id] = color_name
+        if parsed is None:
+            continue
+        pts = _parse_geo_curve_points(item.get("points"))
+        if len(pts) < 2:
+            continue
+        key = (str(parsed["side"]), float(parsed["offset_m"]))
+        grouped.setdefault(key, {})[int(parsed["segment"])] = pts
+        if color_name:
+            key_colors[key] = color_name
+
+    rules = {"curve_colors": curve_colors, "grouped": grouped, "key_colors": key_colors}
+    _BOUNDARY_RULES_CACHE[path] = {"_cache_mtime": mtime, "rules": rules}
+    return curve_colors
+
+
+def visible_boundary_colors_from_projected(
+    projected_curves: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    border_json_path: str = "",
+) -> List[str]:
+    curve_colors = curve_colors_from_border_file(border_json_path)
+    names: List[str] = []
+    for curve_id, pts in (projected_curves or {}).items():
+        if not isinstance(curve_id, str) or not isinstance(pts, list) or not pts:
+            continue
+        color_name = _extract_curve_color_name(pts)
+        if color_name is None:
+            color_name = curve_colors.get(curve_id)
+        if color_name and color_name not in names:
+            names.append(color_name)
+    return names
+
+
+def _polyline_scanline_intersections_x(y: float, points: List[Tuple[int, int]]) -> List[float]:
+    xs: List[float] = []
+    pts = _dedupe_consecutive_points(list(points or []))
+    if len(pts) < 2:
+        return xs
+    for idx in range(len(pts) - 1):
+        x1, y1 = pts[idx]
+        x2, y2 = pts[idx + 1]
+        y1f = float(y1)
+        y2f = float(y2)
+        if abs(y2f - y1f) < 1e-6:
+            continue
+        ymin = min(y1f, y2f)
+        ymax = max(y1f, y2f)
+        if not (ymin <= float(y) < ymax):
+            continue
+        ratio = (float(y) - y1f) / (y2f - y1f)
+        xs.append(float(x1) + ratio * (float(x2) - float(x1)))
+    xs.sort()
+    out: List[float] = []
+    for x in xs:
+        if not out or abs(out[-1] - x) > 1e-3:
+            out.append(x)
+    return out
+
+
+def _extend_polyline_for_scanline(points: List[Tuple[int, int]], scan_y: float) -> List[Tuple[float, float]]:
+    pts = [(float(px), float(py)) for px, py in _dedupe_consecutive_points(list(points or []))]
+    if len(pts) < 2:
+        return pts
+    ys = [py for _, py in pts]
+    visible_span_y = max(ys) - min(ys)
+    if visible_span_y < 6.0:
+        return pts
+    max_extend_y = max(80.0, min(260.0, visible_span_y * 6.0))
+    extended = list(pts)
+
+    def _build_endpoint_extension(anchor: Tuple[float, float], neighbor: Tuple[float, float]) -> Optional[Tuple[float, float]]:
+        ax, ay = anchor
+        nx, ny = neighbor
+        outward_dy = ay - ny
+        if abs(outward_dy) < 1e-6:
+            return None
+        target_dy = float(scan_y) - ay
+        if target_dy * outward_dy <= 0:
+            return None
+        extend_y = min(max_extend_y, abs(target_dy) + 4.0)
+        ratio = extend_y / abs(outward_dy)
+        return (
+            ax + (ax - nx) * ratio,
+            ay + outward_dy / abs(outward_dy) * extend_y,
+        )
+
+    first_extension = _build_endpoint_extension(pts[0], pts[1])
+    if first_extension is not None:
+        extended.insert(0, first_extension)
+    last_extension = _build_endpoint_extension(pts[-1], pts[-2])
+    if last_extension is not None:
+        extended.append(last_extension)
+    return extended
+
+
+def _collect_boundaries_at_y(
+    scan_y: float,
+    projected_curves: Dict[str, List[Dict[str, Any]]],
+    curve_colors: Dict[str, str],
+) -> List[Tuple[float, str]]:
+    boundaries: List[Tuple[float, str]] = []
+    for curve_id, pts in (projected_curves or {}).items():
+        if not isinstance(curve_id, str) or not isinstance(pts, list):
+            continue
+        uv = _extract_curve_uv_points(pts)
+        if len(uv) < 2:
+            continue
+        parsed = parse_boundary_curve_id(curve_id)
+        if parsed and parsed.get("side") == "inside":
+            continue
+        color_name = _extract_curve_color_name(pts)
+        if color_name is None:
+            color_name = curve_colors.get(curve_id)
+        if color_name not in _LEVEL_BY_COLOR:
+            continue
+        scanline_uv = _extend_polyline_for_scanline(uv, scan_y)
+        for x_cross in _polyline_scanline_intersections_x(scan_y, scanline_uv):
+            boundaries.append((float(x_cross), str(color_name)))
+    boundaries.sort(key=lambda item: item[0])
+    return boundaries
+
+
+def _single_line_level(boundaries: List[Tuple[float, str]]) -> Optional[int]:
+    unique_colors = []
+    for _, color_name in boundaries:
+        if color_name not in unique_colors:
+            unique_colors.append(color_name)
+    if len(unique_colors) != 1:
+        return None
+    return _LEVEL_BY_COLOR.get(unique_colors[0])
+
+
+def _classify_from_boundaries(scan_x: float, boundaries: List[Tuple[float, str]]) -> Optional[int]:
+    if not boundaries:
+        return None
+
+    single_level = _single_line_level(boundaries)
+    if single_level is not None:
+        return single_level
+
+    left = None
+    right = None
+    for boundary in boundaries:
+        if boundary[0] <= scan_x:
+            left = boundary
+            continue
+        right = boundary
+        break
+
+    if left is not None and right is not None:
+        pair = (str(left[1]), str(right[1]))
+        pair_set = {pair[0], pair[1]}
+        if pair[0] == "red" and pair[1] == "red":
+            return 1
+        if pair_set == {"red", "yellow"}:
+            return 2
+        if pair_set == {"yellow", "orange"}:
+            return 3
+
+    # 多线时，橙线外直接不报警
+    orange_positions = [bx for bx, color_name in boundaries if color_name == "orange"]
+    yellow_positions = [bx for bx, color_name in boundaries if color_name == "yellow"]
+    if orange_positions:
+        if yellow_positions:
+            leftmost_orange = min(orange_positions)
+            nearest_yellow_to_left_orange = min(yellow_positions, key=lambda x: abs(x - leftmost_orange))
+            outward = leftmost_orange - nearest_yellow_to_left_orange
+            if abs(outward) > 1e-6 and (scan_x - leftmost_orange) * outward > 0:
+                return None
+            rightmost_orange = max(orange_positions)
+            nearest_yellow_to_right_orange = min(yellow_positions, key=lambda x: abs(x - rightmost_orange))
+            outward = rightmost_orange - nearest_yellow_to_right_orange
+            if abs(outward) > 1e-6 and (scan_x - rightmost_orange) * outward > 0:
+                return None
+        else:
+            # 只有橙线但不止一条时，线外也不报警；线间仍按3级处理
+            if scan_x < min(orange_positions) or scan_x > max(orange_positions):
+                return None
+            return 3
+
+    return None
+
+
+def _classify_from_boundaries_details(scan_x: float, boundaries: List[Tuple[float, str]]) -> Dict[str, Any]:
+    details: Dict[str, Any] = {
+        "alarm_level": None,
+        "reason": "no_boundaries",
+        "boundaries": [(float(x), str(color)) for x, color in boundaries],
+        "outside_orange": False,
+    }
+    if not boundaries:
+        return details
+
+    single_level = _single_line_level(boundaries)
+    if single_level is not None:
+        details["alarm_level"] = int(single_level)
+        only_color = str(boundaries[0][1]) if boundaries else "unknown"
+        details["reason"] = f"single_line:{only_color}"
+        return details
+
+    left = None
+    right = None
+    for boundary in boundaries:
+        if boundary[0] <= scan_x:
+            left = boundary
+            continue
+        right = boundary
+        break
+
+    if left is not None and right is not None:
+        pair = (str(left[1]), str(right[1]))
+        pair_set = {pair[0], pair[1]}
+        if pair[0] == "red" and pair[1] == "red":
+            details["alarm_level"] = 1
+            details["reason"] = "band:red_red"
+            return details
+        if pair_set == {"red", "yellow"}:
+            details["alarm_level"] = 2
+            details["reason"] = "band:red_yellow"
+            return details
+        if pair_set == {"yellow", "orange"}:
+            details["alarm_level"] = 3
+            details["reason"] = "band:yellow_orange"
+            return details
+
+    orange_positions = [bx for bx, color_name in boundaries if color_name == "orange"]
+    yellow_positions = [bx for bx, color_name in boundaries if color_name == "yellow"]
+    if orange_positions:
+        if yellow_positions:
+            leftmost_orange = min(orange_positions)
+            nearest_yellow_to_left_orange = min(yellow_positions, key=lambda x: abs(x - leftmost_orange))
+            outward = leftmost_orange - nearest_yellow_to_left_orange
+            if abs(outward) > 1e-6 and (scan_x - leftmost_orange) * outward > 0:
+                details["reason"] = "outside_orange:left"
+                details["outside_orange"] = True
+                return details
+            rightmost_orange = max(orange_positions)
+            nearest_yellow_to_right_orange = min(yellow_positions, key=lambda x: abs(x - rightmost_orange))
+            outward = rightmost_orange - nearest_yellow_to_right_orange
+            if abs(outward) > 1e-6 and (scan_x - rightmost_orange) * outward > 0:
+                details["reason"] = "outside_orange:right"
+                details["outside_orange"] = True
+                return details
+        else:
+            if scan_x < min(orange_positions) or scan_x > max(orange_positions):
+                details["reason"] = "outside_orange:orange_only"
+                details["outside_orange"] = True
+                return details
+            details["alarm_level"] = 3
+            details["reason"] = "band:orange_only"
+            return details
+
+    details["reason"] = "unresolved_multi_line"
+    return details
+
+
+def classify_point_alarm_level_uv_details(
+    pt: Tuple[float, float],
+    projected_curves: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    border_json_path: str = "",
+) -> Dict[str, Any]:
+    details: Dict[str, Any] = {
+        "alarm_level": None,
+        "reason": "invalid_point",
+        "matched_scan_y": None,
+        "visible_colors": [],
+        "boundaries": [],
+        "scan_x": None,
+        "scan_y": None,
+        "outside_orange": False,
+    }
+    try:
+        scan_x = float(pt[0])
+        scan_y = float(pt[1])
+    except Exception:
+        return details
+    details["scan_x"] = scan_x
+    details["scan_y"] = scan_y
+    if not projected_curves:
+        details["reason"] = "no_projected_curves"
+        return details
+
+    curve_colors = curve_colors_from_border_file(border_json_path)
+    details["visible_colors"] = visible_boundary_colors_from_projected(projected_curves, border_json_path)
+    y_offsets = [0.0]
+    for delta in (12.0, 24.0, 40.0, 64.0, 96.0, 140.0, 200.0):
+        y_offsets.extend((-delta, delta))
+
+    last_details = None
+    for delta in y_offsets:
+        boundaries = _collect_boundaries_at_y(scan_y + float(delta), projected_curves, curve_colors)
+        cur = _classify_from_boundaries_details(scan_x, boundaries)
+        cur["matched_scan_y"] = scan_y + float(delta)
+        last_details = cur
+        if cur.get("alarm_level") is not None or cur.get("outside_orange"):
+            details.update(cur)
+            return details
+
+    if isinstance(last_details, dict):
+        details.update(last_details)
+    if details.get("reason") == "invalid_point":
+        details["reason"] = "unresolved"
+    return details
+
+
+def classify_point_alarm_level_uv(
+    pt: Tuple[float, float],
+    projected_curves: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    border_json_path: str = "",
+) -> Optional[int]:
+    details = classify_point_alarm_level_uv_details(
+        pt,
+        projected_curves=projected_curves,
+        border_json_path=border_json_path,
+    )
+    level = details.get("alarm_level")
+    return int(level) if level is not None else None

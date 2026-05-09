@@ -15,6 +15,14 @@ from nan.post_request import post_requests_response_with_meta
 logger = logging.getLogger(__name__)
 
 
+def _coerce_dynamic_alarm_level(value: Any) -> int:
+    try:
+        level = int(value)
+    except Exception:
+        return 0
+    return level if level in (1, 2, 3, 4) else 0
+
+
 class PlatformApiClient:
     """巡检平台 API 客户端：负责登录、全局 token 复用与告警上报。"""
 
@@ -190,13 +198,20 @@ class PlatformApiClient:
                 position = json.dumps(position, ensure_ascii=False)
         position = str(position or "")
 
-        level_map = {
-            "low": 1,
-            "medium": 2,
-            "high": 3,
-            "critical": 4,
-        }
-        alert_level_value = level_map.get(getattr(getattr(alert_event, "alert_level", None), "value", ""), 1)
+        dynamic_alarm_level = (
+            _coerce_dynamic_alarm_level(metadata.get("alarm_level"))
+            or _coerce_dynamic_alarm_level(target_info.get("alarm_level"))
+        )
+        if dynamic_alarm_level:
+            alert_level_value = dynamic_alarm_level
+        else:
+            level_map = {
+                "low": 1,
+                "medium": 2,
+                "high": 3,
+                "critical": 4,
+            }
+            alert_level_value = level_map.get(getattr(getattr(alert_event, "alert_level", None), "value", ""), 1)
         alarm_timestamp = int(float(getattr(alert_event, "timestamp", 0.0) or 0.0) * 1000)
         alarm_id = str(getattr(alert_event, "event_id", "") or uuid.uuid4())
 
