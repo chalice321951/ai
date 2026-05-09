@@ -502,6 +502,7 @@ class AlertSystem:
         self._rules: Dict[str, AlertRule] = {}
         self._last_alert_times: Dict[str, float] = {}
         self._trigger_times: Dict[str, float] = {}
+        self._alerted_track_ids: Dict[str, set] = {}
         self._lock = threading.RLock()
         self.alert_handler: Optional[AlertHandler] = None
         self._last_uninit_warn = 0.0
@@ -513,6 +514,7 @@ class AlertSystem:
     def add_rule(self, rule: AlertRule):
         with self._lock:
             self._rules[rule.rule_id] = rule
+            self._alerted_track_ids.setdefault(rule.rule_id, set())
             logging.info(f"告警规则已添加: {rule.rule_id}")
 
     def process_frame_alerts(self, frame: np.ndarray, detection_dict: dict,
@@ -533,8 +535,25 @@ class AlertSystem:
                     continue
                 val = detection_dict.get(rule_id, 0.0)
                 triggered = val >= rule.threshold_value
+                tracking_enabled = False
+                current_track_ids = set()
+                if isinstance(target_info, dict):
+                    tracking_enabled = bool(target_info.get('tracking_enabled', False))
+                    for tid in list(target_info.get('track_ids', []) or []):
+                        if tid in (None, ''):
+                            continue
+                        try:
+                            current_track_ids.add(int(tid))
+                        except Exception:
+                            current_track_ids.add(tid)
 
                 if triggered:
+                    new_track_ids = set()
+                    if tracking_enabled and current_track_ids:
+                        alerted_track_ids = self._alerted_track_ids.setdefault(rule_id, set())
+                        new_track_ids = current_track_ids - alerted_track_ids
+                        if not new_track_ids:
+                            continue
                     if rule_id not in self._trigger_times:
                         self._trigger_times[rule_id] = now
                     duration = now - self._trigger_times[rule_id]
@@ -553,8 +572,13 @@ class AlertSystem:
                         threshold_value=rule.threshold_value,
                         timestamp=now,
                         message=f"告警: {rule.description} 当前值={val:.2f}",
-                        metadata={'target_info': target_info} if target_info else {},
+                        metadata={
+                            'target_info': target_info,
+                            'new_track_ids': sorted(new_track_ids, key=lambda item: str(item)),
+                        } if target_info else {},
                     )
+                    if tracking_enabled and new_track_ids:
+                        self._alerted_track_ids.setdefault(rule_id, set()).update(new_track_ids)
                     logging.warning(f"[AlertSystem] 触发告警: {rule_id} val={val:.2f}")
                     try:
                         self.alert_handler.handle_alert(event, frame, target_info, frame_ts=frame_ts)

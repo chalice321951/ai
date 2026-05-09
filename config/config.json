@@ -13,14 +13,14 @@
   "tracking": {
     "persist": true,
     "tracker": "bytetrack.yaml",
-    "conf_threshold": 0.3,
-    "match_iou": 0.3
+    "conf_threshold": 0.5,
+    "match_iou": 0.5
   },
   "models": {
-    "default_conf_threshold": 0.7,
+    "default_conf_threshold": 0.8,
     "model_mappings": {
       "detection": {
-        "3001": "/home/lenovo/AI/models/vis-m-bs16-sz960.pt"
+        "3001": "/home/lenovo/models/best_daxinjix_260509.pt"
       }
     }
   },
@@ -36,7 +36,7 @@
       "monitorEq": "罗家集",
       "area": "罗家集",
       "rootName": "罗家集",
-      "alarmAccuratePosition": "115.985621,28.631285"
+      "alarmAccuratePosition": "115.9846290,28.6368333"
     },
     {
       "name": "商储大厦",
@@ -49,7 +49,7 @@
       "monitorEq": "商储大厦",
       "area": "商储大厦",
       "rootName": "商储大厦",
-      "alarmAccuratePosition": "115.911293,28.661427"
+      "alarmAccuratePosition": "115.9109626,28.6673361"
     },
     {
       "name": "世贸广场",
@@ -62,7 +62,7 @@
       "monitorEq": "世贸广场",
       "area": "世贸广场",
       "rootName": "世贸广场",
-      "alarmAccuratePosition": "115.862916,28.690084"
+      "alarmAccuratePosition": "115.8621492,28.6956047"
     },
     {
       "name": "岗下江南郡",
@@ -75,7 +75,7 @@
       "monitorEq": "岗下江南郡",
       "area": "岗下江南郡",
       "rootName": "岗下江南郡",
-      "alarmAccuratePosition": "115.982946,28.618430"
+      "alarmAccuratePosition": "115.9833856,28.6263936"
     },
     {
       "name": "中央香榭",
@@ -88,7 +88,7 @@
       "monitorEq": "中央香榭",
       "area": "中央香榭",
       "rootName": "中央香榭",
-      "alarmAccuratePosition": "115.831200,28.656200"
+      "alarmAccuratePosition": "115.8291056,28.6636626"
     },
     {
       "name": "国动塔",
@@ -101,7 +101,7 @@
       "monitorEq": "国动塔",
       "area": "国动塔",
       "rootName": "国动塔",
-      "alarmAccuratePosition": "115.829762,28.678103"
+      "alarmAccuratePosition": "115.8303731,28.6875022"
     },
     {
       "name": "龙王庙",
@@ -114,7 +114,7 @@
       "monitorEq": "龙王庙",
       "area": "龙王庙",
       "rootName": "龙王庙",
-      "alarmAccuratePosition": "115.957400,28.679400"
+      "alarmAccuratePosition": "115.8357363,28.6802214 "
     },
     {
       "name": "锦天府汉庭酒店",
@@ -127,7 +127,7 @@
       "monitorEq": "锦天府汉庭酒店",
       "area": "锦天府汉庭酒店",
       "rootName": "锦天府汉庭酒店楼",
-      "alarmAccuratePosition": "115.797715,28.621283"
+      "alarmAccuratePosition": "115.7972133,28.6271633"
     },
     {
       "name": "绿地国际博览城",
@@ -140,7 +140,7 @@
       "monitorEq": "绿地国际博览城",
       "area": "绿地国际博览城",
       "rootName": "绿地国际博览城",
-      "alarmAccuratePosition": "115.797715,28.621283"
+      "alarmAccuratePosition": "115.7978269,28.6062171"
     },
     {
       "name": "交投大厦旁国动塔",
@@ -153,7 +153,7 @@
       "monitorEq": "交投大厦旁国动塔",
       "area": "交投大厦旁国动塔",
       "rootName": "交投大厦旁国动塔",
-      "alarmAccuratePosition": "115.797715,28.621283"
+      "alarmAccuratePosition": "115.7895614,28.6395599"
     },
     {
       "name": "东湖急救中心",
@@ -166,7 +166,7 @@
       "monitorEq": "东湖急救中心",
       "area": "东湖急救中心",
       "rootName": "东湖急救中心",
-      "alarmAccuratePosition": "115.878417,28.678488"
+      "alarmAccuratePosition": "115.8810352,28.6905479"
     }
   ],
   "classes": {
