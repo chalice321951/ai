@@ -38,7 +38,7 @@
         "gimbal_yaw": 146.5,
         "gimbal_pitch": -11.0,
         "gimbal_roll": 0.0,
-        "zoom_factor": 1.16
+        "zoom_factor": 1.0
       },
       "needs_completion": false,
       "note": "参数已人工校准"
@@ -63,7 +63,7 @@
         "gimbal_yaw": 272.27,
         "gimbal_pitch": -22.0,
         "gimbal_roll": 0.0,
-        "zoom_factor": 1.16
+        "zoom_factor": 1.0
       },
       "needs_completion": true,
       "note": "参数已校准byLXP"
@@ -88,7 +88,7 @@
         "gimbal_yaw": 143.9,
         "gimbal_pitch": -18.0,
         "gimbal_roll": 0.0,
-        "zoom_factor": 2.32
+        "zoom_factor": 1.0
       },
       "needs_completion": true,
       "note": "参数已校准byLXP"
@@ -113,7 +113,7 @@
         "gimbal_yaw": 10.94,
         "gimbal_pitch": -16.0,
         "gimbal_roll": 0.0,
-        "zoom_factor": 1.16
+        "zoom_factor": 1.0
       },
       "needs_completion": true,
       "note": "参数已校准byLXP"
@@ -138,7 +138,7 @@
         "gimbal_yaw": 311.22,
         "gimbal_pitch": -21.0,
         "gimbal_roll": 0.0,
-        "zoom_factor": 1.16
+        "zoom_factor": 1.0
       },
       "needs_completion": true,
       "note": "参数已校准byLXP"
@@ -163,7 +163,7 @@
         "gimbal_yaw": 116.01,
         "gimbal_pitch": -16.0,
         "gimbal_roll": 0.0,
-        "zoom_factor": 3.48
+        "zoom_factor": 1.0
       },
       "needs_completion": true,
       "note": "参数已校准byLXP"
@@ -188,7 +188,7 @@
         "gimbal_yaw": 296.85,
         "gimbal_pitch": -9.0,
         "gimbal_roll": 0.0,
-        "zoom_factor": 1.16
+        "zoom_factor": 1.0
       },
       "needs_completion": true,
       "note": "参数已校准byLXP"
@@ -213,7 +213,7 @@
         "gimbal_yaw": 115.0,
         "gimbal_pitch": -11.0,
         "gimbal_roll": 0.0,
-        "zoom_factor": 3.48
+        "zoom_factor": 1.0
       },
       "needs_completion": true,
       "note": "参数已校准byLXP"
@@ -238,7 +238,7 @@
         "gimbal_yaw": 237.0,
         "gimbal_pitch": -16.0,
         "gimbal_roll": 0.0,
-        "zoom_factor": 1.16
+        "zoom_factor": 1.0
       },
       "needs_completion": true,
       "note": "参数已校准byLXP"
@@ -263,7 +263,7 @@
         "gimbal_yaw": 105.27,
         "gimbal_pitch": -14.0,
         "gimbal_roll": 0.0,
-        "zoom_factor": 1.16
+        "zoom_factor": 1.0
       },
       "needs_completion": true,
       "note": "参数已校准byLXP"
@@ -288,7 +288,7 @@
         "gimbal_yaw": 57.44,
         "gimbal_pitch": -25.0,
         "gimbal_roll": 0.0,
-        "zoom_factor": 1.16
+        "zoom_factor": 1.0
       },
       "needs_completion": true,
       "note": "参数已校准byLXP"
