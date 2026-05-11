@@ -89,6 +89,44 @@ class TestAlarmLevel(unittest.TestCase):
         }
         self.assertIsNone(classify_point_alarm_level_uv((95, 50), projected))
 
+    def test_guodongta_uses_orange_enclosure_level1(self):
+        projected = {
+            "outside_border_0m_1": [self._seg(40, (38, 167, 255))],
+            "outside_border_0m_2": [self._seg(80, (38, 167, 255))],
+            "outside_border_-20m_1": [self._seg(60, (0, 255, 255))],
+        }
+        self.assertEqual(
+            classify_point_alarm_level_uv((60, 50), projected, stream_name="国动塔"),
+            1,
+        )
+        self.assertIsNone(
+            classify_point_alarm_level_uv((95, 50), projected, stream_name="国动塔"),
+        )
+
+    def test_longwangmiao_uses_orange_above_line_level1(self):
+        projected = {
+            "outside_border_0m_1": [{"u1": 20, "v1": 40, "u2": 80, "v2": 40, "color_bgr": [38, 167, 255]}],
+        }
+        self.assertEqual(
+            classify_point_alarm_level_uv((50, 20), projected, stream_name="龙王庙"),
+            1,
+        )
+        self.assertIsNone(
+            classify_point_alarm_level_uv((50, 60), projected, stream_name="龙王庙"),
+        )
+
+    def test_luojiaji_orange_enclosure_overrides_default_bands(self):
+        projected = {
+            "outside_border_-40m_1": [self._seg(30, (0, 0, 255))],
+            "outside_border_-20m_1": [self._seg(50, (0, 255, 255))],
+            "outside_border_0m_1": [self._seg(20, (38, 167, 255))],
+            "outside_border_0m_2": [self._seg(90, (38, 167, 255))],
+        }
+        self.assertEqual(
+            classify_point_alarm_level_uv((60, 50), projected, stream_name="罗家集全景"),
+            1,
+        )
+
     def test_can_use_colors_from_border_json(self):
         projected = {
             "outside_border_-40m_1": [self._seg(40)],

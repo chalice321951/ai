@@ -24,6 +24,12 @@ _LEVEL_BY_COLOR = {
     "yellow": 2,
     "orange": 3,
 }
+_STREAM_STRATEGY_BY_KEYWORD = {
+    "龙王庙": "orange_above_line_level1",
+    "岗下江南郡": "orange_enclosed_level1",
+    "国动塔": "orange_enclosed_level1",
+    "罗家集": "luojiaji_mixed",
+}
 
 
 def parse_boundary_curve_id(curve_id: Any) -> Optional[Dict[str, Any]]:
@@ -244,6 +250,32 @@ def _polyline_scanline_intersections_x(y: float, points: List[Tuple[int, int]]) 
     return out
 
 
+def _polyline_vertical_intersections_y(x: float, points: List[Tuple[int, int]]) -> List[float]:
+    ys: List[float] = []
+    pts = _dedupe_consecutive_points(list(points or []))
+    if len(pts) < 2:
+        return ys
+    for idx in range(len(pts) - 1):
+        x1, y1 = pts[idx]
+        x2, y2 = pts[idx + 1]
+        x1f = float(x1)
+        x2f = float(x2)
+        if abs(x2f - x1f) < 1e-6:
+            continue
+        xmin = min(x1f, x2f)
+        xmax = max(x1f, x2f)
+        if not (xmin <= float(x) < xmax):
+            continue
+        ratio = (float(x) - x1f) / (x2f - x1f)
+        ys.append(float(y1) + ratio * (float(y2) - float(y1)))
+    ys.sort()
+    out: List[float] = []
+    for y in ys:
+        if not out or abs(out[-1] - y) > 1e-3:
+            out.append(y)
+    return out
+
+
 def _extend_polyline_for_scanline(points: List[Tuple[int, int]], scan_y: float) -> List[Tuple[float, float]]:
     pts = [(float(px), float(py)) for px, py in _dedupe_consecutive_points(list(points or []))]
     if len(pts) < 2:
@@ -305,6 +337,127 @@ def _collect_boundaries_at_y(
             boundaries.append((float(x_cross), str(color_name)))
     boundaries.sort(key=lambda item: item[0])
     return boundaries
+
+
+def _collect_color_positions_at_x(
+    scan_x: float,
+    projected_curves: Dict[str, List[Dict[str, Any]]],
+    curve_colors: Dict[str, str],
+    target_color: str,
+) -> List[float]:
+    positions: List[float] = []
+    for curve_id, pts in (projected_curves or {}).items():
+        if not isinstance(curve_id, str) or not isinstance(pts, list):
+            continue
+        uv = _extract_curve_uv_points(pts)
+        if len(uv) < 2:
+            continue
+        parsed = parse_boundary_curve_id(curve_id)
+        if parsed and parsed.get("side") == "inside":
+            continue
+        color_name = _extract_curve_color_name(pts)
+        if color_name is None:
+            color_name = curve_colors.get(curve_id)
+        if color_name != target_color:
+            continue
+        positions.extend(_polyline_vertical_intersections_y(scan_x, uv))
+    positions.sort()
+    out: List[float] = []
+    for pos in positions:
+        if not out or abs(out[-1] - pos) > 1e-3:
+            out.append(pos)
+    return out
+
+
+def _resolve_stream_strategy(stream_name: str) -> str:
+    text = str(stream_name or "").strip()
+    if not text:
+        return "default"
+    for keyword, strategy in _STREAM_STRATEGY_BY_KEYWORD.items():
+        if keyword in text:
+            return strategy
+    return "default"
+
+
+def _classify_orange_enclosed_level1_details(
+    scan_x: float,
+    boundaries: List[Tuple[float, str]],
+) -> Dict[str, Any]:
+    details: Dict[str, Any] = {
+        "alarm_level": None,
+        "reason": "no_boundaries",
+        "boundaries": [(float(x), str(color)) for x, color in boundaries],
+        "outside_orange": False,
+    }
+    if not boundaries:
+        return details
+    orange_positions = [bx for bx, color_name in boundaries if color_name == "orange"]
+    if len(orange_positions) < 2:
+        details["reason"] = "orange_band_unresolved"
+        return details
+    left_orange = min(orange_positions)
+    right_orange = max(orange_positions)
+    if left_orange <= scan_x <= right_orange:
+        details["alarm_level"] = 1
+        details["reason"] = "orange_enclosed"
+        return details
+    details["reason"] = "outside_orange_enclosure"
+    details["outside_orange"] = True
+    return details
+
+
+def _classify_orange_above_line_level1_details(
+    scan_x: float,
+    scan_y: float,
+    projected_curves: Dict[str, List[Dict[str, Any]]],
+    curve_colors: Dict[str, str],
+) -> Dict[str, Any]:
+    details: Dict[str, Any] = {
+        "alarm_level": None,
+        "reason": "no_orange_line_at_x",
+        "boundaries": [],
+        "outside_orange": False,
+    }
+    orange_positions = _collect_color_positions_at_x(scan_x, projected_curves, curve_colors, "orange")
+    details["boundaries"] = [(float(scan_x), float(y)) for y in orange_positions]
+    if not orange_positions:
+        return details
+    divider_y = min(orange_positions)
+    if scan_y < divider_y:
+        details["alarm_level"] = 1
+        details["reason"] = "orange_above_line"
+        return details
+    details["reason"] = "below_orange_line"
+    details["outside_orange"] = True
+    return details
+
+
+def _classify_stream_specific_details(
+    stream_name: str,
+    scan_x: float,
+    scan_y: float,
+    boundaries: List[Tuple[float, str]],
+    projected_curves: Dict[str, List[Dict[str, Any]]],
+    curve_colors: Dict[str, str],
+) -> Optional[Dict[str, Any]]:
+    strategy = _resolve_stream_strategy(stream_name)
+    if strategy == "default":
+        return None
+    if strategy == "orange_above_line_level1":
+        return _classify_orange_above_line_level1_details(scan_x, scan_y, projected_curves, curve_colors)
+    if strategy == "orange_enclosed_level1":
+        return _classify_orange_enclosed_level1_details(scan_x, boundaries)
+    if strategy == "luojiaji_mixed":
+        orange_positions = [bx for bx, color_name in boundaries if color_name == "orange"]
+        if len(orange_positions) >= 2 and min(orange_positions) <= scan_x <= max(orange_positions):
+            return {
+                "alarm_level": 1,
+                "reason": "orange_enclosed_override",
+                "boundaries": [(float(x), str(color)) for x, color in boundaries],
+                "outside_orange": False,
+            }
+        return _classify_from_boundaries_details(scan_x, boundaries)
+    return None
 
 
 def _single_line_level(boundaries: List[Tuple[float, str]]) -> Optional[int]:
@@ -445,6 +598,7 @@ def classify_point_alarm_level_uv_details(
     pt: Tuple[float, float],
     projected_curves: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     border_json_path: str = "",
+    stream_name: str = "",
 ) -> Dict[str, Any]:
     details: Dict[str, Any] = {
         "alarm_level": None,
@@ -476,7 +630,16 @@ def classify_point_alarm_level_uv_details(
     last_details = None
     for delta in y_offsets:
         boundaries = _collect_boundaries_at_y(scan_y + float(delta), projected_curves, curve_colors)
-        cur = _classify_from_boundaries_details(scan_x, boundaries)
+        cur = _classify_stream_specific_details(
+            stream_name,
+            scan_x,
+            scan_y + float(delta),
+            boundaries,
+            projected_curves,
+            curve_colors,
+        )
+        if cur is None:
+            cur = _classify_from_boundaries_details(scan_x, boundaries)
         cur["matched_scan_y"] = scan_y + float(delta)
         last_details = cur
         if cur.get("alarm_level") is not None or cur.get("outside_orange"):
@@ -494,11 +657,13 @@ def classify_point_alarm_level_uv(
     pt: Tuple[float, float],
     projected_curves: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     border_json_path: str = "",
+    stream_name: str = "",
 ) -> Optional[int]:
     details = classify_point_alarm_level_uv_details(
         pt,
         projected_curves=projected_curves,
         border_json_path=border_json_path,
+        stream_name=stream_name,
     )
     level = details.get("alarm_level")
     return int(level) if level is not None else None

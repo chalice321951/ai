@@ -1055,6 +1055,7 @@ class StreamProcessor:
                 point_uv,
                 projected_curves=projected_curves,
                 border_json_path=self.boundary_projector_border_json,
+                stream_name=self.name,
             )
             if level_details.get("alarm_level") is None:
                 return None, str(level_details.get("reason") or "outside_orange_or_unresolved"), level_details
