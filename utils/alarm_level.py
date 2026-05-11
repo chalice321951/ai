@@ -369,6 +369,78 @@ def _collect_color_positions_at_x(
     return out
 
 
+def _point_in_polygon(point: Tuple[float, float], polygon: List[Tuple[float, float]]) -> bool:
+    if len(polygon) < 3:
+        return False
+    x = float(point[0])
+    y = float(point[1])
+    inside = False
+    pts = list(polygon)
+    if pts[0] != pts[-1]:
+        pts.append(pts[0])
+    for idx in range(len(pts) - 1):
+        x1, y1 = float(pts[idx][0]), float(pts[idx][1])
+        x2, y2 = float(pts[idx + 1][0]), float(pts[idx + 1][1])
+        if (y1 > y) == (y2 > y):
+            continue
+        denom = (y2 - y1)
+        if abs(denom) < 1e-9:
+            continue
+        x_cross = x1 + (y - y1) * (x2 - x1) / denom
+        if x_cross >= x:
+            inside = not inside
+    return inside
+
+
+def _polyline_area(points: List[Tuple[float, float]]) -> float:
+    if len(points) < 3:
+        return 0.0
+    pts = list(points)
+    if pts[0] != pts[-1]:
+        pts.append(pts[0])
+    area = 0.0
+    for idx in range(len(pts) - 1):
+        x1, y1 = pts[idx]
+        x2, y2 = pts[idx + 1]
+        area += x1 * y2 - x2 * y1
+    return abs(area) * 0.5
+
+
+def _polyline_bbox(points: List[Tuple[float, float]]) -> Tuple[float, float, float, float]:
+    xs = [float(px) for px, _ in points]
+    ys = [float(py) for _, py in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _collect_outside_orange_polygons(
+    projected_curves: Dict[str, List[Dict[str, Any]]],
+    curve_colors: Dict[str, str],
+) -> List[List[Tuple[float, float]]]:
+    polygons: List[List[Tuple[float, float]]] = []
+    for curve_id, pts in (projected_curves or {}).items():
+        if not isinstance(curve_id, str) or not isinstance(pts, list):
+            continue
+        parsed = parse_boundary_curve_id(curve_id)
+        if not parsed or parsed.get("side") != "outside":
+            continue
+        color_name = _extract_curve_color_name(pts)
+        if color_name is None:
+            color_name = curve_colors.get(curve_id)
+        if color_name != "orange":
+            continue
+        uv = _extract_curve_uv_points(pts)
+        if len(uv) < 3:
+            continue
+        poly = [(float(px), float(py)) for px, py in uv]
+        if poly[0] != poly[-1]:
+            poly.append(poly[0])
+        if _polyline_area(poly) < 100.0:
+            continue
+        polygons.append(poly)
+    polygons.sort(key=_polyline_area, reverse=True)
+    return polygons
+
+
 def _resolve_stream_strategy(stream_name: str) -> str:
     text = str(stream_name or "").strip()
     if not text:
@@ -382,6 +454,9 @@ def _resolve_stream_strategy(stream_name: str) -> str:
 def _classify_orange_enclosed_level1_details(
     scan_x: float,
     boundaries: List[Tuple[float, str]],
+    projected_curves: Dict[str, List[Dict[str, Any]]],
+    curve_colors: Dict[str, str],
+    scan_y: float,
 ) -> Dict[str, Any]:
     details: Dict[str, Any] = {
         "alarm_level": None,
@@ -389,20 +464,47 @@ def _classify_orange_enclosed_level1_details(
         "boundaries": [(float(x), str(color)) for x, color in boundaries],
         "outside_orange": False,
     }
+    polygons = _collect_outside_orange_polygons(projected_curves, curve_colors)
+    if polygons:
+        # Prefer a true pixel polygon from the projected orange boundary. This
+        # matches the visible overlay better than scanline min/max heuristics.
+        for poly in polygons:
+            if _point_in_polygon((scan_x, scan_y), poly):
+                details["alarm_level"] = 1
+                details["reason"] = "orange_pixel_polygon"
+                details["orange_polygon_bbox"] = _polyline_bbox(poly)
+                return details
+        details["reason"] = "outside_orange_pixel_polygon"
+        details["outside_orange"] = True
+        details["orange_polygon_bbox"] = _polyline_bbox(polygons[0])
+        return details
+
     if not boundaries:
+        details["reason"] = "no_orange_boundaries"
         return details
     orange_positions = [bx for bx, color_name in boundaries if color_name == "orange"]
-    if len(orange_positions) < 2:
-        details["reason"] = "orange_band_unresolved"
-        return details
-    left_orange = min(orange_positions)
-    right_orange = max(orange_positions)
-    if left_orange <= scan_x <= right_orange:
-        details["alarm_level"] = 1
-        details["reason"] = "orange_enclosed"
-        return details
-    details["reason"] = "outside_orange_enclosure"
-    details["outside_orange"] = True
+    if len(orange_positions) >= 2:
+        intervals: List[Tuple[float, float]] = []
+        sorted_positions = sorted(float(x) for x in orange_positions)
+        for idx in range(0, len(sorted_positions) - 1, 2):
+            left_orange = sorted_positions[idx]
+            right_orange = sorted_positions[idx + 1]
+            if right_orange < left_orange:
+                left_orange, right_orange = right_orange, left_orange
+            intervals.append((left_orange, right_orange))
+        for left_orange, right_orange in intervals:
+            if left_orange <= scan_x <= right_orange:
+                details["alarm_level"] = 1
+                details["reason"] = "orange_pixel_band_fallback"
+                details["orange_intervals"] = [(float(a), float(b)) for a, b in intervals]
+                details["matched_scan_y"] = scan_y
+                return details
+        if intervals:
+            details["reason"] = "outside_orange_pixel_band_fallback"
+            details["outside_orange"] = True
+            details["orange_intervals"] = [(float(a), float(b)) for a, b in intervals]
+            return details
+    details["reason"] = "orange_band_unresolved"
     return details
 
 
@@ -446,7 +548,7 @@ def _classify_stream_specific_details(
     if strategy == "orange_above_line_level1":
         return _classify_orange_above_line_level1_details(scan_x, scan_y, projected_curves, curve_colors)
     if strategy == "orange_enclosed_level1":
-        return _classify_orange_enclosed_level1_details(scan_x, boundaries)
+        return _classify_orange_enclosed_level1_details(scan_x, boundaries, projected_curves, curve_colors, scan_y)
     if strategy == "luojiaji_mixed":
         orange_positions = [bx for bx, color_name in boundaries if color_name == "orange"]
         if len(orange_positions) >= 2 and min(orange_positions) <= scan_x <= max(orange_positions):

@@ -1,6 +1,8 @@
 [
   "tests/test_alarm_level.py::TestAlarmLevel::test_can_use_colors_from_border_json",
+  "tests/test_alarm_level.py::TestAlarmLevel::test_guodongta_polygon_outside_returns_none",
   "tests/test_alarm_level.py::TestAlarmLevel::test_guodongta_uses_orange_enclosure_level1",
+  "tests/test_alarm_level.py::TestAlarmLevel::test_guodongta_uses_paired_orange_pixel_intervals",
   "tests/test_alarm_level.py::TestAlarmLevel::test_longwangmiao_uses_orange_above_line_level1",
   "tests/test_alarm_level.py::TestAlarmLevel::test_luojiaji_orange_enclosure_overrides_default_bands",
   "tests/test_alarm_level.py::TestAlarmLevel::test_multi_line_uses_band_level",

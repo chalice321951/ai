@@ -91,9 +91,12 @@ class TestAlarmLevel(unittest.TestCase):
 
     def test_guodongta_uses_orange_enclosure_level1(self):
         projected = {
-            "outside_border_0m_1": [self._seg(40, (38, 167, 255))],
-            "outside_border_0m_2": [self._seg(80, (38, 167, 255))],
-            "outside_border_-20m_1": [self._seg(60, (0, 255, 255))],
+            "outside_border_0m_1": [
+                {"u1": 20, "v1": 20, "u2": 80, "v2": 20, "color_bgr": [38, 167, 255]},
+                {"u1": 80, "v1": 20, "u2": 80, "v2": 80, "color_bgr": [38, 167, 255]},
+                {"u1": 80, "v1": 80, "u2": 20, "v2": 80, "color_bgr": [38, 167, 255]},
+                {"u1": 20, "v1": 80, "u2": 20, "v2": 20, "color_bgr": [38, 167, 255]},
+            ],
         }
         self.assertEqual(
             classify_point_alarm_level_uv((60, 50), projected, stream_name="国动塔"),
@@ -125,6 +128,33 @@ class TestAlarmLevel(unittest.TestCase):
         self.assertEqual(
             classify_point_alarm_level_uv((60, 50), projected, stream_name="罗家集全景"),
             1,
+        )
+
+    def test_guodongta_uses_paired_orange_pixel_intervals(self):
+        projected = {
+            "outside_border_0m_1": [self._seg(0, (38, 167, 255))],
+            "outside_border_0m_2": [self._seg(90, (38, 167, 255))],
+            "outside_border_0m_3": [self._seg(260, (38, 167, 255))],
+        }
+        self.assertEqual(
+            classify_point_alarm_level_uv((40, 50), projected, stream_name="国动塔"),
+            1,
+        )
+        self.assertIsNone(
+            classify_point_alarm_level_uv((120, 50), projected, stream_name="国动塔"),
+        )
+
+    def test_guodongta_polygon_outside_returns_none(self):
+        projected = {
+            "outside_border_0m_1": [
+                {"u1": 20, "v1": 20, "u2": 80, "v2": 20, "color_bgr": [38, 167, 255]},
+                {"u1": 80, "v1": 20, "u2": 80, "v2": 80, "color_bgr": [38, 167, 255]},
+                {"u1": 80, "v1": 80, "u2": 20, "v2": 80, "color_bgr": [38, 167, 255]},
+                {"u1": 20, "v1": 80, "u2": 20, "v2": 20, "color_bgr": [38, 167, 255]},
+            ],
+        }
+        self.assertIsNone(
+            classify_point_alarm_level_uv((95, 50), projected, stream_name="国动塔"),
         )
 
     def test_can_use_colors_from_border_json(self):
