@@ -5,6 +5,7 @@
 import cv2
 import logging
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -85,6 +86,7 @@ class AlertHandler:
         self.result_path = result_path
         self.config = config
         os.makedirs(result_path, exist_ok=True)
+        self.stream_name = str(stream_cfg.get('name', 'unknown') or 'unknown').strip() or 'unknown'
 
         self.platform_client = None
         try:
@@ -111,6 +113,28 @@ class AlertHandler:
         self._frame_sequence = 0
         self.validation_image_mae_threshold = 8.0
         self.validation_video_mae_threshold = 12.0
+
+    @staticmethod
+    def _safe_path_component(value: str) -> str:
+        text = str(value or "").strip()
+        text = re.sub(r'[<>:"/\\|?*]+', "_", text)
+        text = text.strip(" .")
+        return text or "unknown"
+
+    @staticmethod
+    def _date_dir_from_ts(ts_value: Optional[float] = None) -> str:
+        try:
+            ts = float(ts_value if ts_value is not None else time.time())
+        except Exception:
+            ts = time.time()
+        return time.strftime("%Y%m%d", time.localtime(ts))
+
+    def _ensure_output_dir(self, category: str, ts_value: Optional[float] = None) -> str:
+        category_name = self._safe_path_component(category)
+        day_dir = self._date_dir_from_ts(ts_value)
+        path = os.path.join(self.result_path, day_dir, category_name)
+        os.makedirs(path, exist_ok=True)
+        return path
 
     def update_latest_push_frame(self, frame: np.ndarray):
         if frame is not None:
@@ -166,14 +190,40 @@ class AlertHandler:
         if frame is None:
             return ""
         try:
-            ts = time.strftime("%Y%m%d-%H%M%S")
+            ts_epoch = float(getattr(event, 'timestamp', time.time()) or time.time())
+            ts = time.strftime("%Y%m%d-%H%M%S", time.localtime(ts_epoch))
             fname = f"alert_{event.rule_id}_{ts}.jpg"
-            path = os.path.join(self.result_path, fname)
+            path = os.path.join(self._ensure_output_dir("alerts", ts_epoch), fname)
             cv2.imwrite(path, frame)
             logging.info(f"告警图片已保存: {path}")
             return path
         except Exception as e:
             logging.error(f"保存告警图片失败: {e}")
+            return ""
+
+    def save_suppressed_image(
+        self,
+        frame: np.ndarray,
+        reason: str = "",
+        target_info: Optional[dict] = None,
+        frame_ts: Optional[float] = None,
+    ) -> str:
+        if frame is None:
+            return ""
+        try:
+            ts_epoch = float(frame_ts if frame_ts is not None else time.time())
+            ts = time.strftime("%Y%m%d-%H%M%S", time.localtime(ts_epoch))
+            reason_tag = self._safe_path_component(reason or "suppressed")
+            track_id = ""
+            if isinstance(target_info, dict) and target_info.get('track_id') not in (None, ''):
+                track_id = f"_track{target_info.get('track_id')}"
+            fname = f"suppressed_{reason_tag}_{ts}{track_id}.jpg"
+            path = os.path.join(self._ensure_output_dir("suppressed", ts_epoch), fname)
+            cv2.imwrite(path, frame)
+            logging.info(f"未上报告警图片已保存: {path}")
+            return path
+        except Exception as e:
+            logging.error(f"保存未上报告警图片失败: {e}")
             return ""
 
     def _start_clip_job(
@@ -257,7 +307,7 @@ class AlertHandler:
 
                 ts = time.strftime("%Y%m%d-%H%M%S")
                 clip_path = os.path.join(
-                    self.result_path,
+                    self._ensure_output_dir("clips", job.get('event').timestamp if job.get('event') else None),
                     f"clip_{job['target_id']}_{ts}.mp4"
                 )
                 video_saved = self._write_video(frames, clip_path)

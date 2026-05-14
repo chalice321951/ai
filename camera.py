@@ -1000,6 +1000,16 @@ class StreamProcessor:
         confirmed_frame = self._draw_ai_badge(confirmed_frame, fid=fid)
         target_info = self._build_alert_target_info(overlays, self._last_tracking_summary, projected_curves)
         if not bool(target_info.get('should_alert')):
+            try:
+                if self.alert_system and self.alert_system.alert_handler:
+                    self.alert_system.alert_handler.save_suppressed_image(
+                        confirmed_frame,
+                        reason=str(target_info.get('alarm_level_source') or 'outside_orange_or_unresolved'),
+                        target_info=target_info,
+                        frame_ts=self._last_frame_ts if self._last_frame_ts > 0 else None,
+                    )
+            except Exception as e:
+                logging.debug(f"[{self.name}] 保存未上报告警调试图失败: {e}")
             return None
         return {
             'frame': confirmed_frame,

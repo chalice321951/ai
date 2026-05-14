@@ -126,7 +126,7 @@ class TestAlarmLevel(unittest.TestCase):
             "outside_border_0m_2": [self._seg(90, (38, 167, 255))],
         }
         self.assertEqual(
-            classify_point_alarm_level_uv((60, 50), projected, stream_name="罗家集全景"),
+            classify_point_alarm_level_uv((60, 50), projected, stream_name="罗家集"),
             1,
         )
 

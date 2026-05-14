@@ -24,7 +24,7 @@ _LEVEL_BY_COLOR = {
     "yellow": 2,
     "orange": 3,
 }
-_STREAM_STRATEGY_BY_KEYWORD = {
+_STREAM_STRATEGY_BY_NAME = {
     "龙王庙": "orange_above_line_level1",
     "岗下江南郡": "orange_enclosed_level1",
     "国动塔": "orange_enclosed_level1",
@@ -445,10 +445,7 @@ def _resolve_stream_strategy(stream_name: str) -> str:
     text = str(stream_name or "").strip()
     if not text:
         return "default"
-    for keyword, strategy in _STREAM_STRATEGY_BY_KEYWORD.items():
-        if keyword in text:
-            return strategy
-    return "default"
+    return str(_STREAM_STRATEGY_BY_NAME.get(text) or "default")
 
 
 def _classify_orange_enclosed_level1_details(
