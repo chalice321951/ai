@@ -108,6 +108,14 @@ except Exception:
     except Exception:
         BoundaryCameraProjector = None
 
+# 实时 PTZ -> camera_projector_config.json 同步线程。
+try:
+    from utils.camera_ptz_config_updater import start_realtime_ptz_config_updater
+except Exception:
+    try:
+        from camera_ptz_config_updater import start_realtime_ptz_config_updater
+    except Exception:
+        start_realtime_ptz_config_updater = None
 
 
 def _enable_fault_logging(log_dir: str = 'log'):
@@ -218,6 +226,13 @@ class StreamProcessor:
         self._boundary_overlay_cache_key = None
         self._boundary_overlay_cache_img = None
         self._boundary_overlay_cache_mask = None
+        # 外部 camera_projector_config.json 运行时重载感知。
+        # 配合实时 PTZ 同步线程：同步线程负责写 JSON；每路 StreamProcessor 负责每隔约1秒感知 JSON 变化。
+        self._boundary_projector_config_path = None
+        self._boundary_projector_config_sig = None
+        self._last_boundary_projector_config_check_ts = 0.0
+        self._last_boundary_projector_reload_error_ts = 0.0
+
         self._boundary_overlay_cache_lock = threading.Lock()
         self._init_boundary_projector()
 
@@ -331,8 +346,17 @@ class StreamProcessor:
         # 找不到也返回 project_root 下的路径，让后续 FileNotFoundError 的日志更直观。
         return str(project_root / p)
 
-    def _load_projector_external_config(self):
-        """读取独立的摄像头投影配置文件。不存在则返回空字典。"""
+    @staticmethod
+    def _projector_config_file_sig(path_value):
+        try:
+            p = Path(str(path_value))
+            st = p.stat()
+            return str(p.resolve()), int(st.st_mtime_ns), int(st.st_size)
+        except Exception:
+            return str(path_value), None, None
+
+    def _find_projector_external_config_path(self):
+        """查找独立摄像头投影配置文件路径。"""
         path_candidates = [
             self.stream_cfg.get('camera_projector_config_path'),
             self.stream_cfg.get('projector_config_path'),
@@ -347,17 +371,28 @@ class StreamProcessor:
             p = Path(str(p))
             if not p.is_absolute():
                 p = project_root / p
-            if not p.exists():
-                continue
-            try:
-                with open(p, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                logging.info(f"[{self.name}] 已读取摄像头投影配置: {p}")
-                return data if isinstance(data, dict) else {}
-            except Exception as e:
-                logging.error(f"[{self.name}] 读取摄像头投影配置失败: {p}, err={e}")
-                return {}
-        return {}
+            if p.exists():
+                return p
+        return None
+
+    def _load_projector_external_config(self):
+        """读取独立的摄像头投影配置文件。不存在则返回空字典。"""
+        p = self._find_projector_external_config_path()
+        if not p:
+            return {}
+
+        try:
+            with open(p, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            self._boundary_projector_config_path = str(p)
+            self._boundary_projector_config_sig = self._projector_config_file_sig(p)
+
+            logging.info(f"[{self.name}] 已读取摄像头投影配置: {p}")
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            logging.error(f"[{self.name}] 读取摄像头投影配置失败: {p}, err={e}")
+            return {}
 
     def _match_projector_config(self) -> dict:
         """
@@ -496,6 +531,128 @@ class StreamProcessor:
             self.boundary_projector = None
             logging.error(f"[{self.name}] 初始化保护区界线投影失败: {e}")
 
+    def _clear_boundary_overlay_cache(self):
+        """清空保护区界线 overlay 缓存，下一帧会重新投影。"""
+        try:
+            with self._boundary_overlay_cache_lock:
+                self._boundary_overlay_cache_key = None
+                self._boundary_overlay_cache_img = None
+                self._boundary_overlay_cache_mask = None
+        except Exception:
+            pass
+
+    @staticmethod
+    def _projector_info_signature(info: dict):
+        if not isinstance(info, dict):
+            return ()
+        out = []
+        for k in sorted(info.keys()):
+            try:
+                out.append((k, round(float(info[k]), 8)))
+            except Exception:
+                out.append((k, str(info[k])))
+        return tuple(out)
+
+    def _reload_boundary_projector_config_if_changed(self, force: bool = False) -> bool:
+        """
+        每隔约1秒检查 camera_projector_config.json 是否变化。
+
+        如果变化，则重新匹配当前流对应的投影配置，并更新：
+        - boundary_projector_info
+        - border_json
+        - ground_alt
+        - line_thickness
+        - cache_overlay
+
+        只要上述内容有变化，就清空 overlay 缓存。
+        """
+        now = time.time()
+        if not force and (now - self._last_boundary_projector_config_check_ts) < 1.0:
+            return False
+        self._last_boundary_projector_config_check_ts = now
+
+        config_path = self._find_projector_external_config_path()
+        if not config_path:
+            return False
+
+        file_sig = self._projector_config_file_sig(config_path)
+        if not force and file_sig == self._boundary_projector_config_sig:
+            return False
+
+        try:
+            cfg = self._match_projector_config()
+            has_any_cfg = bool(cfg)
+            enabled = bool(
+                cfg.get('enabled', cfg.get('projector_enabled', cfg.get('boundary_projector_enabled', has_any_cfg))))
+
+            if not enabled:
+                if self.boundary_projector_enabled:
+                    self.boundary_projector_enabled = False
+                    self._clear_boundary_overlay_cache()
+                    logging.info(f"[{self.name}] 保护区界线投影配置已变为禁用，已关闭本路投影")
+                self._boundary_projector_config_sig = file_sig
+                return True
+
+            if BoundaryCameraProjector is None:
+                return False
+
+            # 如果原本未启用，则直接走初始化流程。
+            if self.boundary_projector is None or not self.boundary_projector_enabled:
+                self._init_boundary_projector()
+                self._boundary_projector_config_sig = self._projector_config_file_sig(config_path)
+                return True
+
+            old_runtime_sig = (
+                str(self.boundary_projector_border_json),
+                self._projector_info_signature(self.boundary_projector_info),
+                round(float(self.boundary_projector_ground_alt), 8),
+                int(self.boundary_projector_line_thickness),
+                bool(self.boundary_projector_cache_overlay),
+            )
+
+            border_json = cfg.get('border_json') or cfg.get('border_json_path') or cfg.get('borderJson')
+            border_json = self._resolve_projector_path(border_json)
+            if not border_json:
+                raise ValueError('缺少 border_json / border_json_path')
+
+            info = self._coerce_projector_info(cfg)
+            ground_alt = float(cfg.get('ground_alt', cfg.get('groundAlt', 0.0)) or 0.0)
+            line_thickness = int(cfg.get('line_thickness', cfg.get('lineThickness', 8)) or 8)
+            cache_overlay = bool(cfg.get('cache_overlay', cfg.get('cacheOverlay', True)))
+
+            self.boundary_projector_info = info
+            self.boundary_projector_border_json = border_json
+            self.boundary_projector_ground_alt = ground_alt
+            self.boundary_projector_line_thickness = max(1, line_thickness)
+            self.boundary_projector_cache_overlay = cache_overlay
+            self.boundary_projector_enabled = True
+            self._boundary_projector_config_sig = self._projector_config_file_sig(config_path)
+
+            new_runtime_sig = (
+                str(self.boundary_projector_border_json),
+                self._projector_info_signature(self.boundary_projector_info),
+                round(float(self.boundary_projector_ground_alt), 8),
+                int(self.boundary_projector_line_thickness),
+                bool(self.boundary_projector_cache_overlay),
+            )
+
+            if new_runtime_sig != old_runtime_sig:
+                self._clear_boundary_overlay_cache()
+                logging.info(
+                    f"[{self.name}] 检测到保护区投影配置变化，已刷新本路投影参数并清空缓存: "
+                    f"camera_identity={self.camera_identity}, info={self.boundary_projector_info}"
+                )
+                return True
+
+            return False
+
+        except Exception as e:
+            now = time.time()
+            if now - self._last_boundary_projector_reload_error_ts >= 5.0:
+                logging.error(f"[{self.name}] 重载保护区投影配置失败: {e}")
+                self._last_boundary_projector_reload_error_ts = now
+            return False
+
     def _boundary_overlay_key(self, frame: np.ndarray):
         """生成保护区界线缓存键：相机参数、图像尺寸、边界文件修改时间任何一项变化都会失效。"""
         if frame is None:
@@ -562,6 +719,14 @@ class StreamProcessor:
         return np.ascontiguousarray(overlay, dtype=np.uint8), mask
 
     def _draw_boundary_projector(self, frame: np.ndarray, fid: Optional[int] = None) -> np.ndarray:
+        try:
+            self._reload_boundary_projector_config_if_changed()
+        except Exception as e:
+            now = time.time()
+            if now - self._last_boundary_projector_error_ts >= 5.0:
+                logging.error(f"[{self.name}] 检查保护区投影配置变化失败 fid={fid}: {e}")
+                self._last_boundary_projector_error_ts = now
+
         if not self.boundary_projector_enabled or self.boundary_projector is None:
             return frame
         try:
@@ -1720,6 +1885,32 @@ class CameraStreamManager:
             return len(self._processors)
 
 
+def _resolve_global_projector_config_path(config: CameraConfig):
+    """为实时PTZ同步线程查找 camera_projector_config.json。"""
+    path_candidates = [
+        getattr(config, 'camera_projector_config_path', None),
+        os.getenv('CAMERA_PROJECTOR_CONFIG'),
+        project_root / 'config' / 'camera_projector_config.json',
+        project_root / 'camera_projector_config.json',
+    ]
+    for p in path_candidates:
+        if not p:
+            continue
+        p = Path(str(p))
+        if not p.is_absolute():
+            p = project_root / p
+        if p.exists():
+            return str(p)
+    return None
+
+
+def _env_flag_enabled(name: str, default: bool = True) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return bool(default)
+    return str(value).strip().lower() not in ('0', 'false', 'no', 'off', 'disable', 'disabled')
+
+
 def main():
     setup_logging()
     fault_log_handle = _enable_fault_logging()
@@ -1751,8 +1942,35 @@ def main():
 
     manager = CameraStreamManager(config)
 
+    ptz_updater = None
+    if start_realtime_ptz_config_updater is not None:
+        ptz_config_path = _resolve_global_projector_config_path(config)
+        ptz_enabled = _env_flag_enabled('CAMERA_PROJECTOR_REALTIME_PTZ_ENABLED', True)
+        ptz_enabled = bool(getattr(config, 'camera_projector_realtime_ptz_enabled', ptz_enabled)) and ptz_enabled
+
+        if ptz_enabled and ptz_config_path:
+            ptz_updater = start_realtime_ptz_config_updater(
+                ptz_config_path,
+                enabled=True,
+                poll_interval=float(getattr(config, 'camera_projector_ptz_poll_interval', 1.0) or 1.0),
+                request_timeout=float(getattr(config, 'camera_projector_ptz_request_timeout', 1.5) or 1.5),
+                verify_ssl=bool(getattr(config, 'camera_projector_ptz_verify_ssl', False)),
+                logger=logging.getLogger(__name__),
+            )
+        elif ptz_enabled and not ptz_config_path:
+            logging.warning("实时PTZ同步未启动：找不到 camera_projector_config.json")
+        else:
+            logging.info("实时PTZ同步未启用")
+    else:
+        logging.warning("实时PTZ同步未启动：无法导入 utils.camera_ptz_config_updater")
+
     def _signal_handler(signum, frame):
-        logging.info(f"收到信号 {signum}，开始优雅退出...")
+        logging.info(f"收到信号 {signum}，开始优雅退出.")
+        try:
+            if ptz_updater is not None:
+                ptz_updater.stop()
+        except Exception:
+            pass
         manager.stop_all()
         sys.exit(0)
 
@@ -1770,6 +1988,12 @@ def main():
     except KeyboardInterrupt:
         logging.info("收到键盘中断，退出")
     finally:
+        try:
+            if ptz_updater is not None:
+                ptz_updater.stop()
+        except Exception:
+            pass
+
         manager.stop_all()
         if fault_log_handle is not None:
             try:
