@@ -35,13 +35,24 @@
         "latitude": 28.6368333,
         "longitude": 115.984629,
         "height": 29.5,
-        "gimbal_yaw": 146.5,
-        "gimbal_pitch": -11.0,
+        "gimbal_yaw": 137.33,
+        "gimbal_pitch": -16.98,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.0
       },
       "needs_completion": false,
-      "note": "参数已人工校准"
+      "note": "参数已人工校准",
+      "realtime_ptz": {
+        "enabled": true,
+        "updated_at": "2026-05-15 11:06:34",
+        "interface_device_name": "罗家集",
+        "camera_name": "罗家集",
+        "raw_ptz": {
+          "x": 243.83,
+          "y": 16.98,
+          "z": 1.0
+        }
+      }
     },
     "camera-1004": {
       "enabled": true,
@@ -60,13 +71,24 @@
         "latitude": 28.6673361,
         "longitude": 115.9109626,
         "height": 45.0,
-        "gimbal_yaw": 272.27,
-        "gimbal_pitch": -22.0,
+        "gimbal_yaw": 277.05,
+        "gimbal_pitch": -30.2,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.0
       },
       "needs_completion": true,
-      "note": "参数已校准byLXP"
+      "note": "参数已校准byLXP",
+      "realtime_ptz": {
+        "enabled": true,
+        "updated_at": "2026-05-15 11:05:51",
+        "interface_device_name": "商储大厦",
+        "camera_name": "商储大厦",
+        "raw_ptz": {
+          "x": 266.78,
+          "y": 30.2,
+          "z": 1.0
+        }
+      }
     },
     "camera-1006": {
       "enabled": true,
@@ -77,7 +99,7 @@
       ],
       "input_url": "rtmp://10.1.129.99:1935/live/camera-1006",
       "output_url": "rtmp://10.1.129.99:1935/ai/camera-1006",
-      "border_json": "config/borders/ ShiMaoGuangChangMPZ.json",
+      "border_json": "config/borders/ShiMaoGuangChangMPZ.json",
       "ground_alt": 0.0,
       "line_thickness": 4,
       "cache_overlay": true,
@@ -85,13 +107,24 @@
         "latitude": 28.6956047,
         "longitude": 115.8621492,
         "height": 25.0,
-        "gimbal_yaw": 143.9,
-        "gimbal_pitch": -18.0,
+        "gimbal_yaw": 154.41,
+        "gimbal_pitch": -21.15,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.0
       },
       "needs_completion": true,
-      "note": "参数已校准byLXP"
+      "note": "参数已校准byLXP",
+      "realtime_ptz": {
+        "enabled": true,
+        "updated_at": "2026-05-15 11:04:14",
+        "interface_device_name": "世茂广场",
+        "camera_name": "世贸广场",
+        "raw_ptz": {
+          "x": 43.51,
+          "y": 21.15,
+          "z": 1.0
+        }
+      }
     },
     "camera-1008": {
       "enabled": true,
@@ -110,13 +143,24 @@
         "latitude": 28.6263936,
         "longitude": 115.9833856,
         "height": 80.0,
-        "gimbal_yaw": 10.94,
-        "gimbal_pitch": -16.0,
+        "gimbal_yaw": 39.98,
+        "gimbal_pitch": -18.79,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.0
       },
       "needs_completion": true,
-      "note": "参数已校准byLXP"
+      "note": "参数已校准byLXP",
+      "realtime_ptz": {
+        "enabled": true,
+        "updated_at": "2026-05-15 11:31:58",
+        "interface_device_name": "岗下江南郡九栋楼面",
+        "camera_name": "岗下江南郡",
+        "raw_ptz": {
+          "x": 358.14,
+          "y": 18.79,
+          "z": 1.27
+        }
+      }
     },
     "camera-1010": {
       "enabled": true,
@@ -135,13 +179,24 @@
         "latitude": 28.6636626,
         "longitude": 115.8291056,
         "height": 80.0,
-        "gimbal_yaw": 311.22,
-        "gimbal_pitch": -21.0,
+        "gimbal_yaw": 315.66,
+        "gimbal_pitch": -21.58,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.0
       },
       "needs_completion": true,
-      "note": "参数已校准byLXP"
+      "note": "参数已校准byLXP",
+      "realtime_ptz": {
+        "enabled": true,
+        "updated_at": "2026-05-15 11:51:22",
+        "interface_device_name": "中央香榭2栋楼面",
+        "camera_name": "中央香榭",
+        "raw_ptz": {
+          "x": 281.44,
+          "y": 21.58,
+          "z": 1.0
+        }
+      }
     },
     "camera-1012": {
       "enabled": true,
@@ -159,14 +214,25 @@
       "info": {
         "latitude": 28.6785226,
         "longitude": 115.8228709,
-        "height": 20.0,
-        "gimbal_yaw": 169.75,
-        "gimbal_pitch": -16.0,
+        "height": 60.0,
+        "gimbal_yaw": 203.37,
+        "gimbal_pitch": -20.05,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.0
       },
       "needs_completion": true,
-      "note": "参数已校准byLXP"
+      "note": "参数已校准byLXP",
+      "realtime_ptz": {
+        "enabled": true,
+        "updated_at": "2026-05-15 11:19:12",
+        "interface_device_name": "新建长堎立交西单杆站",
+        "camera_name": "国动塔",
+        "raw_ptz": {
+          "x": 203.34,
+          "y": 20.05,
+          "z": 1.0
+        }
+      }
     },
     "camera-1013": {
       "enabled": true,
@@ -182,16 +248,27 @@
       "line_thickness": 4,
       "cache_overlay": true,
       "info": {
-        "latitude": 28.6802214,
-        "longitude": 115.8357363,
+        "latitude": 28.6821820,
+        "longitude": 115.8312880,
         "height": 25.0,
-        "gimbal_yaw": 296.85,
-        "gimbal_pitch": -9.0,
+        "gimbal_yaw": 300.46,
+        "gimbal_pitch": -10.7,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.0
       },
       "needs_completion": true,
-      "note": "参数已校准byLXP"
+      "note": "参数已校准byLXP",
+      "realtime_ptz": {
+        "enabled": true,
+        "updated_at": "2026-05-15 11:30:29",
+        "interface_device_name": "龙王庙小区104栋楼顶",
+        "camera_name": "龙王庙",
+        "raw_ptz": {
+          "x": 166.6,
+          "y": 10.7,
+          "z": 1.0
+        }
+      }
     },
     "camera-1016": {
       "enabled": true,
@@ -210,13 +287,24 @@
         "latitude": 28.6271633,
         "longitude": 115.7972133,
         "height": 40.0,
-        "gimbal_yaw": 115.0,
-        "gimbal_pitch": -11.0,
+        "gimbal_yaw": 109.4,
+        "gimbal_pitch": -23.21,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.0
       },
       "needs_completion": true,
-      "note": "参数已校准byLXP"
+      "note": "参数已校准byLXP",
+      "realtime_ptz": {
+        "enabled": true,
+        "updated_at": "2026-05-15 11:03:04",
+        "interface_device_name": "锦天府汉庭酒店楼顶",
+        "camera_name": "锦天府汉庭酒店",
+        "raw_ptz": {
+          "x": 163.4,
+          "y": 23.21,
+          "z": 1.04
+        }
+      }
     },
     "camera-1018": {
       "enabled": true,
@@ -235,13 +323,24 @@
         "latitude": 28.6062171,
         "longitude": 115.7978269,
         "height": 80.0,
-        "gimbal_yaw": 237.0,
-        "gimbal_pitch": -16.0,
+        "gimbal_yaw": 241.24,
+        "gimbal_pitch": -16.57,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.0
       },
       "needs_completion": true,
-      "note": "参数已校准byLXP"
+      "note": "参数已校准byLXP",
+      "realtime_ptz": {
+        "enabled": true,
+        "updated_at": "2026-05-15 11:07:00",
+        "interface_device_name": "绿地国际博览城-博浩205栋楼顶",
+        "camera_name": "绿地国际博览城",
+        "raw_ptz": {
+          "x": 241.24,
+          "y": 16.57,
+          "z": 1.0
+        }
+      }
     },
     "camera-1020": {
       "enabled": true,
@@ -259,14 +358,25 @@
       "info": {
         "latitude": 28.6395599,
         "longitude": 115.7895614,
-        "height": 20.0,
-        "gimbal_yaw": 105.27,
-        "gimbal_pitch": -14.0,
+        "height": 70.0,
+        "gimbal_yaw": 106.15,
+        "gimbal_pitch": -6.05,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.0
       },
       "needs_completion": true,
-      "note": "参数已校准byLXP"
+      "note": "参数已校准byLXP",
+      "realtime_ptz": {
+        "enabled": true,
+        "updated_at": "2026-05-15 11:27:40",
+        "interface_device_name": "交投大厦旁国动塔",
+        "camera_name": "交投大厦旁国动塔",
+        "raw_ptz": {
+          "x": 178.85,
+          "y": 6.05,
+          "z": 2.67
+        }
+      }
     },
     "camera-1022": {
       "enabled": true,
@@ -282,10 +392,10 @@
       "line_thickness": 4,
       "cache_overlay": true,
       "info": {
-        "latitude": 28.6897235,
-        "longitude": 115.8791163,
-        "height": 30.0,
-        "gimbal_yaw": 57.44,
+        "latitude": 28.6895249,
+        "longitude": 115.8786948,
+        "height": 40.0,
+        "gimbal_yaw": 57.45,
         "gimbal_pitch": -25.0,
         "gimbal_roll": 0.0,
         "zoom_factor": 1.0
