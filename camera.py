@@ -176,6 +176,8 @@ class StreamProcessor:
         self.capture_proxy: Optional[CaptureProxy] = None
         self._processor_thread: Optional[threading.Thread] = None
         self._push_thread: Optional[threading.Thread] = None
+        self._capture_watchdog_thread: Optional[threading.Thread] = None
+        self._capture_restart_lock = threading.Lock()
 
         self._frame_id = 0
         self._last_infer_frame_id = -1
@@ -201,11 +203,29 @@ class StreamProcessor:
         self._last_frame_ts = 0.0
         self._last_processed_ts = 0.0
         self._last_push_ts = 0.0
+        self._capture_session_started_ts = 0.0
+        self._last_capture_restart_ts = 0.0
         self._last_infer_result_ts = 0.0
         self._last_infer_result_count = 0
         self._last_target_seen_ts = 0.0
         self._last_motion_level = 0.0
         self._motion_prev_small: Optional[np.ndarray] = None
+        self._capture_watchdog_interval = max(
+            1.0,
+            float(getattr(self.config, 'capture_watchdog_interval', 5.0) or 5.0),
+        )
+        self._capture_stall_timeout = max(
+            self._capture_watchdog_interval * 2.0,
+            float(getattr(self.config, 'capture_stall_timeout', 15.0) or 15.0),
+        )
+        self._capture_start_timeout = max(
+            self._capture_stall_timeout,
+            float(getattr(self.config, 'capture_start_timeout', 20.0) or 20.0),
+        )
+        self._capture_restart_cooldown = max(
+            self._capture_watchdog_interval,
+            float(getattr(self.config, 'capture_restart_cooldown', 10.0) or 10.0),
+        )
         self._tracker = SimpleTracker(
             max_missed=max(5, int(getattr(self.config, 'push_fps', self.config.fps) * 2)),
             min_iou=float(getattr(self.config, 'tracking_match_iou', 0.3) or 0.3),
@@ -826,6 +846,176 @@ class StreamProcessor:
         if vs:
             self._on_status_change(stream_id, vs)
 
+    def _reset_stream_runtime_state(self, clear_timestamps: bool = False):
+        self.inference_scheduler.reset_stream_tracking(self.stream_tracking_key)
+        self._last_detection_overlays = []
+        self._last_tracking_summary = {
+            'track_count': 0,
+            'track_ids': [],
+            'classes': [],
+        }
+        self._logged_active_track_ids.clear()
+        self._last_infer_frame_id = -1
+        self._last_applied_result_frame_id = -1
+        self._pending_infer = False
+        if self._tracker is not None:
+            self._tracker.reset()
+        with self._latest_frame_lock:
+            self._latest_input_frame = None
+        with self._latest_render_lock:
+            self._latest_rendered_frame = None
+        with self._render_queue_lock:
+            self._render_queue.clear()
+        self._frame_buffer.clear()
+        self._frame_ready_event.clear()
+        self._push_reset_needed = True
+        if clear_timestamps:
+            self._last_frame_ts = 0.0
+            self._last_processed_ts = 0.0
+            self._last_push_ts = 0.0
+            self._last_infer_result_ts = 0.0
+            self._last_infer_result_count = 0
+            self._last_target_seen_ts = 0.0
+            self._last_motion_level = 0.0
+            self._motion_prev_small = None
+
+    def _build_capture_proxy(self) -> CaptureProxy:
+        capture_options = self._build_capture_options()
+        logging.info(f"[{self.name}] 拉流参数: {capture_options}")
+        return CaptureProxy(
+            stream_id=f"{self.name}_{int(time.time())}",
+            stream_url=self.input_url,
+            pull_device=self.config.get_pull_device(),
+            capture_options=capture_options,
+            frame_width=self._detected_resolution[0],
+            frame_height=self._detected_resolution[1],
+            frame_callback=self._on_frame,
+            status_callback=self._on_capture_status,
+        )
+
+    def _start_capture_proxy(self):
+        self._capture_session_started_ts = time.time()
+        proxy = self._build_capture_proxy()
+        proxy.start()
+        self.capture_proxy = proxy
+
+    def _restart_capture_proxy(self, reason: str) -> bool:
+        if not self.is_running or self._stop_event.is_set():
+            return False
+
+        old_proxy = None
+        with self._capture_restart_lock:
+            now = time.time()
+            if (now - self._last_capture_restart_ts) < self._capture_restart_cooldown:
+                return False
+            self._last_capture_restart_ts = now
+            logging.warning(
+                f"[{self.name}] 检测到拉流停滞，重建CaptureProxy: "
+                f"reason={reason}, snapshot={self._build_pipeline_snapshot()}"
+            )
+            old_proxy = self.capture_proxy
+            self.capture_proxy = None
+            self._reset_stream_runtime_state(clear_timestamps=True)
+
+        if old_proxy is not None:
+            try:
+                old_proxy.stop()
+            except Exception as e:
+                logging.warning(f"[{self.name}] 停止旧的 CaptureProxy 失败: {e}")
+
+        if not self.is_running or self._stop_event.is_set():
+            return False
+
+        try:
+            self._start_capture_proxy()
+            logging.info(f"[{self.name}] CaptureProxy 已重建完成")
+            return True
+        except Exception as e:
+            logging.error(f"[{self.name}] CaptureProxy 重建失败: {e}")
+            return False
+
+    def _maybe_restart_stale_capture(self, now: Optional[float] = None) -> bool:
+        if not self.is_running or self._stop_event.is_set() or self.capture_proxy is None:
+            return False
+
+        now = time.time() if now is None else now
+        if self._last_frame_ts > 0:
+            frame_age = now - self._last_frame_ts
+            if frame_age >= self._capture_stall_timeout:
+                return self._restart_capture_proxy(
+                    f"frame_timeout frame_age={frame_age:.1f}s status={self._last_capture_status}"
+                )
+            return False
+
+        if self._capture_session_started_ts > 0:
+            startup_age = now - self._capture_session_started_ts
+            if startup_age >= self._capture_start_timeout:
+                return self._restart_capture_proxy(
+                    f"startup_timeout no_frame_for={startup_age:.1f}s status={self._last_capture_status}"
+                )
+        return False
+
+    def _capture_watchdog_loop(self):
+        logging.info(f"[{self.name}] 拉流看门狗线程启动")
+        while self.is_running and not self._stop_event.wait(self._capture_watchdog_interval):
+            try:
+                self._maybe_restart_stale_capture()
+            except Exception as e:
+                logging.error(f"[{self.name}] 拉流看门狗检查异常: {e}")
+        logging.info(f"[{self.name}] 拉流看门狗线程结束")
+
+    def get_activity_snapshot(self, now: Optional[float] = None) -> Dict[str, Any]:
+        now = time.time() if now is None else now
+        frame_age = (now - self._last_frame_ts) if self._last_frame_ts > 0 else -1.0
+        process_age = (now - self._last_processed_ts) if self._last_processed_ts > 0 else -1.0
+        push_age = (now - self._last_push_ts) if self._last_push_ts > 0 else -1.0
+        startup_age = (now - self._capture_session_started_ts) if self._capture_session_started_ts > 0 else -1.0
+        push_timeout = max(5.0, self._capture_watchdog_interval + 2.0)
+
+        active = True
+        reasons = []
+
+        if not self.is_running:
+            active = False
+            reasons.append('stopped')
+        elif self._last_frame_ts <= 0:
+            if startup_age >= self._capture_start_timeout:
+                active = False
+                reasons.append('no_frame')
+        elif frame_age > self._capture_stall_timeout:
+            active = False
+            reasons.append(f'frame_age={frame_age:.1f}s')
+
+        if self.output_url and self.is_running:
+            if self._last_frame_ts > 0:
+                if self._last_push_ts <= 0:
+                    active = False
+                    reasons.append('no_push')
+                elif push_age > push_timeout:
+                    active = False
+                    reasons.append(f'push_age={push_age:.1f}s')
+            elif startup_age >= self._capture_start_timeout and self._last_push_ts <= 0:
+                active = False
+                reasons.append('no_push')
+
+        if self._last_capture_status in ('error', 'interrupted'):
+            if self._last_frame_ts <= 0 or frame_age > push_timeout:
+                active = False
+                reasons.append(f'status={self._last_capture_status}')
+
+        return {
+            'active': active,
+            'reason': ','.join(reasons),
+            'frame_age': frame_age,
+            'process_age': process_age,
+            'push_age': push_age,
+            'startup_age': startup_age,
+            'capture_status': self._last_capture_status,
+        }
+
+    def is_stream_active(self, now: Optional[float] = None) -> bool:
+        return bool(self.get_activity_snapshot(now=now).get('active'))
+
     def start(self):
         self.is_running = True
         self._stop_event.clear()
@@ -840,20 +1030,7 @@ class StreamProcessor:
         if self.output_url:
             self._open_ffmpeg(self.output_url)
 
-        capture_options = self._build_capture_options()
-        logging.info(f"[{self.name}] 拉流参数: {capture_options}")
-
-        self.capture_proxy = CaptureProxy(
-            stream_id=f"{self.name}_{int(time.time())}",
-            stream_url=self.input_url,
-            pull_device=self.config.get_pull_device(),
-            capture_options=capture_options,
-            frame_width=self._detected_resolution[0],
-            frame_height=self._detected_resolution[1],
-            frame_callback=self._on_frame,
-            status_callback=self._on_capture_status,
-        )
-        self.capture_proxy.start()
+        self._start_capture_proxy()
 
         self._processor_thread = threading.Thread(
             target=self._process_frames_loop,
@@ -863,6 +1040,12 @@ class StreamProcessor:
         self._processor_thread.start()
         self._push_thread = threading.Thread(target=self._push_loop, daemon=True, name=f"Push-{self.name}")
         self._push_thread.start()
+        self._capture_watchdog_thread = threading.Thread(
+            target=self._capture_watchdog_loop,
+            daemon=True,
+            name=f"CaptureWatchdog-{self.name}",
+        )
+        self._capture_watchdog_thread.start()
 
         logging.info(f"[{self.name}] 启动完成")
 
@@ -880,25 +1063,7 @@ class StreamProcessor:
             self.video_processor.stop()
             self.video_processor = None
 
-        self.inference_scheduler.reset_stream_tracking(self.stream_tracking_key)
-        self._last_detection_overlays = []
-        self._last_tracking_summary = {
-            'track_count': 0,
-            'track_ids': [],
-            'classes': [],
-        }
-        self._logged_active_track_ids.clear()
-        self._last_infer_frame_id = -1
-        self._last_applied_result_frame_id = -1
-        if self._tracker is not None:
-            self._tracker.reset()
-        with self._latest_frame_lock:
-            self._latest_input_frame = None
-        with self._latest_render_lock:
-            self._latest_rendered_frame = None
-        with self._render_queue_lock:
-            self._render_queue.clear()
-        self._frame_buffer.clear()
+        self._reset_stream_runtime_state(clear_timestamps=True)
 
         self.inference_scheduler.remove_stream(self.stream_tracking_key)
         self._close_ffmpeg(release_nvenc=True)
@@ -1348,25 +1513,7 @@ class StreamProcessor:
         self._last_capture_status = status.value
         logging.info(f"[{self.name}] 流状态: {status.value}")
         if status == VideoStreamStatus.INTERRUPTED:
-            self.inference_scheduler.reset_stream_tracking(self.stream_tracking_key)
-            self._last_detection_overlays = []
-            self._last_tracking_summary = {
-                'track_count': 0,
-                'track_ids': [],
-                'classes': [],
-            }
-            self._logged_active_track_ids.clear()
-            self._last_infer_frame_id = -1
-            self._last_applied_result_frame_id = -1
-            if self._tracker is not None:
-                self._tracker.reset()
-            with self._latest_frame_lock:
-                self._latest_input_frame = None
-            with self._latest_render_lock:
-                self._latest_rendered_frame = None
-            with self._render_queue_lock:
-                self._render_queue.clear()
-            self._frame_buffer.clear()
+            self._reset_stream_runtime_state(clear_timestamps=True)
         elif status in (VideoStreamStatus.READING, VideoStreamStatus.CONNECTED):
             self._push_reset_needed = True
 
@@ -1881,8 +2028,25 @@ class CameraStreamManager:
         logging.info("所有流已停止")
 
     def get_active_count(self) -> int:
+        active, _ = self.get_activity_summary()
+        return active
+
+    def get_activity_summary(self) -> Tuple[int, List[str]]:
         with self._lock:
-            return len(self._processors)
+            items = list(self._processors.items())
+
+        active = 0
+        inactive = []
+        now = time.time()
+        for name, proc in items:
+            try:
+                if proc.is_stream_active(now=now):
+                    active += 1
+                else:
+                    inactive.append(name)
+            except Exception:
+                inactive.append(name)
+        return active, inactive
 
 
 def _resolve_global_projector_config_path(config: CameraConfig):
@@ -1982,8 +2146,14 @@ def main():
 
     try:
         while True:
-            active = manager.get_active_count()
-            logging.info(f"[主循环] 活跃流数量: {active}/{len(stream_list)}")
+            active, inactive = manager.get_activity_summary()
+            if inactive:
+                logging.info(
+                    f"[主循环] 活跃流数量: {active}/{len(stream_list)}, "
+                    f"inactive={','.join(inactive)}"
+                )
+            else:
+                logging.info(f"[主循环] 活跃流数量: {active}/{len(stream_list)}")
             time.sleep(30)
     except KeyboardInterrupt:
         logging.info("收到键盘中断，退出")

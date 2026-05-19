@@ -158,6 +158,19 @@ class CameraConfig:
         self.push_device_mode = normalize_device_mode(stream.get('push_device', DeviceMode.AUTO.value), DeviceMode.AUTO)
         self.pull_device = self.pull_device_mode.value
         self.push_device = self.push_device_mode.value
+        self.capture_watchdog_interval = max(1.0, float(stream.get('capture_watchdog_interval', 5.0) or 5.0))
+        self.capture_stall_timeout = max(
+            self.capture_watchdog_interval * 2.0,
+            float(stream.get('capture_stall_timeout', 15.0) or 15.0),
+        )
+        self.capture_start_timeout = max(
+            self.capture_stall_timeout,
+            float(stream.get('capture_start_timeout', 20.0) or 20.0),
+        )
+        self.capture_restart_cooldown = max(
+            self.capture_watchdog_interval,
+            float(stream.get('capture_restart_cooldown', 10.0) or 10.0),
+        )
 
     def _normalize_model_entries(self, models_cfg: dict) -> List[Dict[str, Any]]:
         normalized: List[Dict[str, Any]] = []
