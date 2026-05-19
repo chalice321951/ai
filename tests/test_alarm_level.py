@@ -144,6 +144,28 @@ class TestAlarmLevel(unittest.TestCase):
             classify_point_alarm_level_uv((120, 50), projected, stream_name="国动塔"),
         )
 
+    def test_guodongta_strict_scanline_uses_current_y_only(self):
+        projected = {
+            "outside_border_0m_1": [self._seg(20, (38, 167, 255))],
+            "outside_border_0m_2": [self._seg(80, (38, 167, 255))],
+        }
+        self.assertIsNone(
+            classify_point_alarm_level_uv((50, 129), projected, stream_name="国动塔"),
+        )
+
+    def test_zhongyangxiangxie_uses_strict_orange_enclosure_level1(self):
+        projected = {
+            "outside_border_0m_1": [self._seg(20, (38, 167, 255))],
+            "outside_border_0m_2": [self._seg(80, (38, 167, 255))],
+        }
+        self.assertEqual(
+            classify_point_alarm_level_uv((50, 50), projected, stream_name="中央香榭"),
+            1,
+        )
+        self.assertIsNone(
+            classify_point_alarm_level_uv((95, 50), projected, stream_name="中央香榭"),
+        )
+
     def test_guodongta_polygon_outside_returns_none(self):
         projected = {
             "outside_border_0m_1": [

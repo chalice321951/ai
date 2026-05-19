@@ -27,7 +27,8 @@ _LEVEL_BY_COLOR = {
 _STREAM_STRATEGY_BY_NAME = {
     "龙王庙": "orange_above_line_level1",
     "岗下江南郡": "orange_enclosed_level1",
-    "国动塔": "orange_enclosed_level1",
+    "国动塔": "orange_enclosed_level1_strict",
+    "中央香榭": "orange_enclosed_level1_strict",
     "罗家集": "luojiaji_mixed",
 }
 
@@ -316,6 +317,7 @@ def _collect_boundaries_at_y(
     scan_y: float,
     projected_curves: Dict[str, List[Dict[str, Any]]],
     curve_colors: Dict[str, str],
+    extend_endpoints: bool = True,
 ) -> List[Tuple[float, str]]:
     boundaries: List[Tuple[float, str]] = []
     for curve_id, pts in (projected_curves or {}).items():
@@ -332,7 +334,7 @@ def _collect_boundaries_at_y(
             color_name = curve_colors.get(curve_id)
         if color_name not in _LEVEL_BY_COLOR:
             continue
-        scanline_uv = _extend_polyline_for_scanline(uv, scan_y)
+        scanline_uv = _extend_polyline_for_scanline(uv, scan_y) if extend_endpoints else uv
         for x_cross in _polyline_scanline_intersections_x(scan_y, scanline_uv):
             boundaries.append((float(x_cross), str(color_name)))
     boundaries.sort(key=lambda item: item[0])
@@ -546,6 +548,8 @@ def _classify_stream_specific_details(
         return _classify_orange_above_line_level1_details(scan_x, scan_y, projected_curves, curve_colors)
     if strategy == "orange_enclosed_level1":
         return _classify_orange_enclosed_level1_details(scan_x, boundaries, projected_curves, curve_colors, scan_y)
+    if strategy == "orange_enclosed_level1_strict":
+        return _classify_orange_enclosed_level1_details(scan_x, boundaries, projected_curves, curve_colors, scan_y)
     if strategy == "luojiaji_mixed":
         orange_positions = [bx for bx, color_name in boundaries if color_name == "orange"]
         if len(orange_positions) >= 2 and min(orange_positions) <= scan_x <= max(orange_positions):
@@ -722,13 +726,22 @@ def classify_point_alarm_level_uv_details(
 
     curve_colors = curve_colors_from_border_file(border_json_path)
     details["visible_colors"] = visible_boundary_colors_from_projected(projected_curves, border_json_path)
+    strategy = _resolve_stream_strategy(stream_name)
+    strict_scanline_strategies = {"orange_enclosed_level1_strict"}
+    use_strict_scanline = strategy in strict_scanline_strategies
     y_offsets = [0.0]
-    for delta in (12.0, 24.0, 40.0, 64.0, 96.0, 140.0, 200.0):
-        y_offsets.extend((-delta, delta))
+    if not use_strict_scanline:
+        for delta in (12.0, 24.0, 40.0, 64.0, 96.0, 140.0, 200.0):
+            y_offsets.extend((-delta, delta))
 
     last_details = None
     for delta in y_offsets:
-        boundaries = _collect_boundaries_at_y(scan_y + float(delta), projected_curves, curve_colors)
+        boundaries = _collect_boundaries_at_y(
+            scan_y + float(delta),
+            projected_curves,
+            curve_colors,
+            extend_endpoints=not use_strict_scanline,
+        )
         cur = _classify_stream_specific_details(
             stream_name,
             scan_x,
