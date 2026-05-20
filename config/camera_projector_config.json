@@ -18,15 +18,15 @@
     }
   },
   "cameras": {
-    "camera-1002": {
+    "camera-1001": {
       "enabled": true,
       "camera_name": "罗家集",
       "aliases": [
         "罗家集",
-        "camera-1002"
+        "camera-1001"
       ],
-      "input_url": "rtmp://10.1.129.99:1935/live/camera-1002",
-      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1002",
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1001",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1001",
       "border_json": "config/borders/LuoJiaJiMPZ.json",
       "ground_alt": 0.0,
       "line_thickness": 4,
@@ -54,15 +54,15 @@
         }
       }
     },
-    "camera-1004": {
+    "camera-1003": {
       "enabled": true,
       "camera_name": "商储大厦",
       "aliases": [
         "商储大厦",
-        "camera-1004"
+        "camera-1003"
       ],
-      "input_url": "rtmp://10.1.129.99:1935/live/camera-1004",
-      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1004",
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1003",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1003",
       "border_json": "config/borders/ShangChuDaShaMPZ.json",
       "ground_alt": 0.0,
       "line_thickness": 4,
@@ -90,15 +90,15 @@
         }
       }
     },
-    "camera-1006": {
+    "camera-1005": {
       "enabled": true,
       "camera_name": "世贸广场",
       "aliases": [
         "世贸广场",
-        "camera-1006"
+        "camera-1005"
       ],
-      "input_url": "rtmp://10.1.129.99:1935/live/camera-1006",
-      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1006",
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1005",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1005",
       "border_json": "config/borders/ShiMaoGuangChangMPZ.json",
       "ground_alt": 0.0,
       "line_thickness": 4,
@@ -126,15 +126,15 @@
         }
       }
     },
-    "camera-1008": {
+    "camera-1007": {
       "enabled": true,
       "camera_name": "岗下江南郡",
       "aliases": [
         "岗下江南郡",
-        "camera-1008"
+        "camera-1007"
       ],
-      "input_url": "rtmp://10.1.129.99:1935/live/camera-1008",
-      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1008",
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1007",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1007",
       "border_json": "config/borders/GangXiaJiangNanMPZ.json",
       "ground_alt": 0.0,
       "line_thickness": 4,
@@ -162,15 +162,15 @@
         }
       }
     },
-    "camera-1010": {
+    "camera-1009": {
       "enabled": true,
       "camera_name": "中央香榭",
       "aliases": [
         "中央香榭",
-        "camera-1010"
+        "camera-1009"
       ],
-      "input_url": "rtmp://10.1.129.99:1935/live/camera-1010",
-      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1010",
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1009",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1009",
       "border_json": "config/borders/ZhongYangXiangXieMPZ.json",
       "ground_alt": 0.0,
       "line_thickness": 4,
@@ -198,15 +198,15 @@
         }
       }
     },
-    "camera-1012": {
+    "camera-1011": {
       "enabled": true,
       "camera_name": "国动塔",
       "aliases": [
         "国动塔",
-        "camera-1012"
+        "camera-1011"
       ],
-      "input_url": "rtmp://10.1.129.99:1935/live/camera-1012",
-      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1012",
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1011",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1011",
       "border_json": "config/borders/GuoDongTaMPZ.json",
       "ground_alt": 0.0,
       "line_thickness": 4,
@@ -270,15 +270,15 @@
         }
       }
     },
-    "camera-1016": {
+    "camera-1015": {
       "enabled": true,
       "camera_name": "锦天府汉庭酒店",
       "aliases": [
         "锦天府汉庭酒店",
-        "camera-1016"
+        "camera-1015"
       ],
-      "input_url": "rtmp://10.1.129.99:1935/live/camera-1016",
-      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1016",
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1015",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1015",
       "border_json": "config/borders/HanTing_and_JiaoTouGuoDongTaMPZ.json",
       "ground_alt": 0.0,
       "line_thickness": 4,
@@ -306,15 +306,15 @@
         }
       }
     },
-    "camera-1018": {
+    "camera-1017": {
       "enabled": true,
       "camera_name": "绿地国际博览城",
       "aliases": [
         "绿地国际博览城",
-        "camera-1018"
+        "camera-1017"
       ],
-      "input_url": "rtmp://10.1.129.99:1935/live/camera-1018",
-      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1018",
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1017",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1017",
       "border_json": "config/borders/LvDiGuoJiMPZ.json",
       "ground_alt": 0.0,
       "line_thickness": 4,
@@ -342,15 +342,15 @@
         }
       }
     },
-    "camera-1020": {
+    "camera-1019": {
       "enabled": true,
       "camera_name": "交投大厦旁国动塔",
       "aliases": [
         "交投大厦旁国动塔",
-        "camera-1020"
+        "camera-1019"
       ],
-      "input_url": "rtmp://10.1.129.99:1935/live/camera-1020",
-      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1020",
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1019",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1019",
       "border_json": "config/borders/HanTing_and_JiaoTouGuoDongTaMPZ.json",
       "ground_alt": 0.0,
       "line_thickness": 4,
@@ -378,15 +378,15 @@
         }
       }
     },
-    "camera-1022": {
+    "camera-1021": {
       "enabled": true,
       "camera_name": "东湖急救中心",
       "aliases": [
         "东湖急救中心",
-        "camera-1022"
+        "camera-1021"
       ],
-      "input_url": "rtmp://10.1.129.99:1935/live/camera-1022",
-      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1022",
+      "input_url": "rtmp://10.1.129.99:1935/live/camera-1021",
+      "output_url": "rtmp://10.1.129.99:1935/ai/camera-1021",
       "border_json": "config/borders/DongHuJiJiuMPZ.json",
       "ground_alt": 0.0,
       "line_thickness": 4,
