@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""实时同步当前被控摄像头 PTZ 到 camera_projector_config.json。"""
+"""实时同步当前被控摄像头 PTZ 到 camera_projector_config.json。
+
+本版本把“接口中文名 -> camera_name”的映射、yaw 校准偏移量、PTZ 接口地址
+从独立运行时配置文件中读取，便于在线调试时只改配置、不改代码。
+默认运行时配置文件建议放在：config/camera_projector_runtime_config.json。
+"""
 from __future__ import annotations
 
 import json
@@ -17,6 +22,7 @@ from urllib.request import Request, urlopen
 PTZ_URL = "https://10.1.129.99:8443/camcontrol/camera/ptz?handle=1&chn=1"
 CURRENT_DEVICE_NAME_URL = "https://10.1.129.99:8443/camcontrol/camera/currentDeviceName"
 
+# 兜底默认值。实际运行时优先使用 config/camera_projector_runtime_config.json 中的 realtime_ptz 配置。
 INTERFACE_NAME_TO_CAMERA_NAME = {
     "罗家集": "罗家集",
     "商储大厦": "商储大厦",
@@ -37,7 +43,7 @@ YAW_OFFSET_BY_CAMERA_NAME = {
     "世贸广场": 110.9,
     "岗下江南郡": -318.16,
     "中央香榭": 34.22,
-    "国动塔": -90,
+    "国动塔": -90.0,
     "龙王庙": 133.85,
     "锦天府汉庭酒店": -54.0,
     "绿地国际博览城": 0.0,
@@ -62,6 +68,16 @@ def _angle_diff_deg(a: float, b: float) -> float:
     return abs((float(a) - float(b) + 180.0) % 360.0 - 180.0)
 
 
+def _config_file_sig(path_value: Optional[Path]) -> Optional[Tuple[str, int, int]]:
+    if path_value is None:
+        return None
+    try:
+        st = path_value.stat()
+        return str(path_value.resolve()), int(st.st_mtime_ns), int(st.st_size)
+    except Exception:
+        return None
+
+
 class RealtimePtzConfigUpdater:
     def __init__(
         self,
@@ -70,8 +86,15 @@ class RealtimePtzConfigUpdater:
         request_timeout: float = 1.5,
         verify_ssl: bool = False,
         logger: Optional[logging.Logger] = None,
+        runtime_config_path: Optional[str] = None,
     ):
+        # camera_projector_config.json：由本线程实时写入 PTZ 结果。
         self.config_path = Path(str(config_path)).resolve()
+
+        # camera_projector_runtime_config.json：由用户手动维护；本线程只读，不写。
+        self.runtime_config_path = Path(str(runtime_config_path)).resolve() if runtime_config_path else None
+        self._runtime_config_sig: Optional[Tuple[str, int, int]] = None
+
         self.poll_interval = max(0.2, float(poll_interval))
         self.request_timeout = max(0.2, float(request_timeout))
         self.logger = logger or logging.getLogger(__name__)
@@ -81,13 +104,22 @@ class RealtimePtzConfigUpdater:
         self._last_warning_ts: Dict[str, float] = {}
         self._last_written_signature: Optional[Tuple[str, Tuple[Tuple[str, float], ...]]] = None
 
+        self.ptz_url = PTZ_URL
+        self.current_device_name_url = CURRENT_DEVICE_NAME_URL
+        self.interface_name_to_camera_name = dict(INTERFACE_NAME_TO_CAMERA_NAME)
+        self.yaw_offset_by_camera_name = dict(YAW_OFFSET_BY_CAMERA_NAME)
+
+        self._reload_runtime_config_if_changed(force=True)
+
     def start(self) -> "RealtimePtzConfigUpdater":
         if self._thread and self._thread.is_alive():
             return self
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run_loop, name="RealtimePtzConfigUpdater", daemon=True)
         self._thread.start()
-        self.logger.info(f"实时PTZ配置同步线程已启动: {self.config_path}")
+        self.logger.info(
+            f"实时PTZ配置同步线程已启动: target={self.config_path}, runtime_config={self.runtime_config_path}"
+        )
         return self
 
     def stop(self, timeout: float = 2.0) -> None:
@@ -104,7 +136,59 @@ class RealtimePtzConfigUpdater:
                 self._warn_throttled("poll_exception", f"实时PTZ配置同步异常: {exc}", 5.0)
             self._stop_event.wait(self.poll_interval)
 
+    def _reload_runtime_config_if_changed(self, force: bool = False) -> bool:
+        """热加载只读运行时配置：PTZ接口地址、中文名映射、yaw偏移量。"""
+        if self.runtime_config_path is None:
+            return False
+        sig = _config_file_sig(self.runtime_config_path)
+        if sig is None:
+            self._warn_throttled(
+                "runtime_config_missing",
+                f"实时PTZ运行时配置文件不存在或不可读: {self.runtime_config_path}",
+                10.0,
+            )
+            return False
+        if not force and sig == self._runtime_config_sig:
+            return False
+        try:
+            with open(self.runtime_config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("运行时配置 JSON 顶层必须是 object")
+            rt = data.get("realtime_ptz") or data.get("ptz") or {}
+            if not isinstance(rt, dict):
+                rt = {}
+
+            self.ptz_url = str(rt.get("ptz_url") or PTZ_URL).strip()
+            self.current_device_name_url = str(rt.get("current_device_name_url") or CURRENT_DEVICE_NAME_URL).strip()
+
+            mapping = rt.get("interface_name_to_camera_name") or rt.get("INTERFACE_NAME_TO_CAMERA_NAME")
+            if isinstance(mapping, dict) and mapping:
+                self.interface_name_to_camera_name = {str(k).strip(): str(v).strip() for k, v in mapping.items() if str(k).strip() and str(v).strip()}
+            else:
+                self.interface_name_to_camera_name = dict(INTERFACE_NAME_TO_CAMERA_NAME)
+
+            offsets = rt.get("yaw_offset_by_camera_name") or rt.get("YAW_OFFSET_BY_CAMERA_NAME")
+            if isinstance(offsets, dict) and offsets:
+                parsed = {}
+                for k, v in offsets.items():
+                    try:
+                        parsed[str(k).strip()] = float(v)
+                    except Exception:
+                        pass
+                self.yaw_offset_by_camera_name = parsed or dict(YAW_OFFSET_BY_CAMERA_NAME)
+            else:
+                self.yaw_offset_by_camera_name = dict(YAW_OFFSET_BY_CAMERA_NAME)
+
+            self._runtime_config_sig = sig
+            self.logger.info(f"实时PTZ运行时配置已加载: {self.runtime_config_path}")
+            return True
+        except Exception as exc:
+            self._warn_throttled("runtime_config_bad", f"加载实时PTZ运行时配置失败: {exc}", 5.0)
+            return False
+
     def poll_once(self) -> bool:
+        self._reload_runtime_config_if_changed(force=False)
         sample = self._read_synced_sample()
         if sample is None:
             return False
@@ -127,12 +211,12 @@ class RealtimePtzConfigUpdater:
         return raw.decode("utf-8", errors="ignore").strip()
 
     def _fetch_device_name(self) -> Optional[str]:
-        text = self._http_get_text(CURRENT_DEVICE_NAME_URL)
+        text = self._http_get_text(self.current_device_name_url)
         name = text.strip().strip('"').strip()
         return name or None
 
     def _fetch_ptz(self) -> Optional[Dict[str, float]]:
-        text = self._http_get_text(PTZ_URL)
+        text = self._http_get_text(self.ptz_url)
         try:
             data = json.loads(text)
         except Exception:
@@ -162,17 +246,17 @@ class RealtimePtzConfigUpdater:
                 3.0,
             )
             return None
-        camera_name = INTERFACE_NAME_TO_CAMERA_NAME.get(name_before)
+        camera_name = self.interface_name_to_camera_name.get(name_before)
         if not camera_name:
             self._warn_throttled(f"unknown:{name_before}", f"接口摄像头名称未配置映射: {name_before}", 10.0)
             return None
         return name_before, camera_name, ptz
 
     def _convert_ptz(self, camera_name: str, ptz: Dict[str, float]) -> Optional[Dict[str, float]]:
-        if camera_name not in YAW_OFFSET_BY_CAMERA_NAME:
+        if camera_name not in self.yaw_offset_by_camera_name:
             self._warn_throttled(f"offset:{camera_name}", f"缺少yaw校准偏移量: {camera_name}", 10.0)
             return None
-        yaw = _normalize360(ptz["x"] + YAW_OFFSET_BY_CAMERA_NAME[camera_name])
+        yaw = _normalize360(ptz["x"] + self.yaw_offset_by_camera_name[camera_name])
         pitch = -ptz["y"]
         zoom = ptz["z"]
         if not all(math.isfinite(v) for v in (yaw, pitch, zoom)):
@@ -290,6 +374,7 @@ def start_realtime_ptz_config_updater(
     request_timeout: float = 1.5,
     verify_ssl: bool = False,
     logger: Optional[logging.Logger] = None,
+    runtime_config_path: Optional[str] = None,
 ) -> Optional[RealtimePtzConfigUpdater]:
     global _UPDATER_INSTANCE
     if not enabled:
@@ -302,5 +387,6 @@ def start_realtime_ptz_config_updater(
                 request_timeout=request_timeout,
                 verify_ssl=verify_ssl,
                 logger=logger,
+                runtime_config_path=runtime_config_path,
             )
         return _UPDATER_INSTANCE.start()

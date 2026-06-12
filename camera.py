@@ -253,6 +253,17 @@ class StreamProcessor:
         self._last_boundary_projector_config_check_ts = 0.0
         self._last_boundary_projector_reload_error_ts = 0.0
 
+        # 独立运行时配置：用户手动修改，负责画线样式参数、PTZ映射与yaw偏移量。
+        # 与 camera_projector_config.json 分开存储，避免被实时PTZ线程覆盖。
+        self._boundary_projector_runtime_config_path = None
+        self._boundary_projector_runtime_config_sig = None
+        self._boundary_projector_draw_options = {}
+        self.boundary_projector_matched_key = None
+        self.boundary_projector_camera_name = None
+        self.boundary_projector_aliases = []
+        self._last_boundary_projector_runtime_config_check_ts = 0.0
+        self._last_boundary_projector_runtime_config_error_ts = 0.0
+
         self._boundary_overlay_cache_lock = threading.Lock()
         self._init_boundary_projector()
 
@@ -414,6 +425,264 @@ class StreamProcessor:
             logging.error(f"[{self.name}] 读取摄像头投影配置失败: {p}, err={e}")
             return {}
 
+    def _find_projector_runtime_config_path(self):
+        """查找独立运行时配置文件：画线样式 + PTZ映射。"""
+        path_candidates = [
+            self.stream_cfg.get('camera_projector_runtime_config_path'),
+            self.stream_cfg.get('projector_runtime_config_path'),
+            getattr(self.config, 'camera_projector_runtime_config_path', None),
+            os.getenv('CAMERA_PROJECTOR_RUNTIME_CONFIG'),
+            project_root / 'config' / 'camera_projector_runtime_config.json',
+            project_root / 'config' / 'camera_projector_runtime_config_byGPT.json',
+            project_root / 'camera_projector_runtime_config.json',
+        ]
+        for p in path_candidates:
+            if not p:
+                continue
+            p = Path(str(p))
+            if not p.is_absolute():
+                p = project_root / p
+            if p.exists():
+                return p
+        return None
+
+    @staticmethod
+    def _safe_float_runtime(value, default=None, allow_none: bool = True):
+        if value is None:
+            return None if allow_none else default
+        if isinstance(value, str) and value.strip().lower() in ('', 'none', 'null'):
+            return None if allow_none else default
+        try:
+            return float(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _safe_int_runtime(value, default=None):
+        try:
+            return int(round(float(value)))
+        except Exception:
+            return default
+
+    @staticmethod
+    def _safe_bool_runtime(value, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return bool(default)
+        s = str(value).strip().lower()
+        if s in ('1', 'true', 'yes', 'y', 'on', 'enable', 'enabled'):
+            return True
+        if s in ('0', 'false', 'no', 'n', 'off', 'disable', 'disabled'):
+            return False
+        return bool(default)
+
+    def _extract_boundary_projector_draw_options(self, runtime_cfg: dict) -> dict:
+        """从运行时配置中提取当前摄像头专属的画线参数。
+
+        支持两种配置结构：
+        1. 新结构（推荐）：
+           {
+             "cameras": {
+               "camera-1001": {"camera_name": "罗家集", "aliases": [...], "drawing": {...}},
+               ...
+             }
+           }
+        2. 旧结构（兼容）：
+           {"drawing": {...}}
+
+        新结构下会优先按 camera_projector_config.json 匹配到的 key、stream 中的 camera_id、
+        URL 中的 camera-xxxx、camera_name、aliases 等信息匹配对应摄像头。
+        """
+        if not isinstance(runtime_cfg, dict):
+            runtime_cfg = {}
+
+        drawing = self._match_runtime_camera_drawing(runtime_cfg)
+        if not isinstance(drawing, dict):
+            drawing = {}
+
+        # 支持 lower_snake_case，也兼容本地测试脚本里的 UPPER_CASE 名称。
+        def pick(*names, default=None):
+            for name in names:
+                if name in drawing:
+                    return drawing.get(name)
+                up = str(name).upper()
+                if up in drawing:
+                    return drawing.get(up)
+            return default
+
+        opts = {
+            'fixed_dash_len_px': self._safe_float_runtime(pick('fixed_dash_len_px', default=10.0), 10.0, allow_none=False),
+            'fixed_gap_len_px': self._safe_float_runtime(pick('fixed_gap_len_px', default=25.0), 25.0, allow_none=False),
+            'json_thickness_enable': self._safe_bool_runtime(pick('json_thickness_enable', default=False), False),
+            'line_thickness_inner': self._safe_int_runtime(pick('line_thickness_inner', default=4), 4),
+            'line_thickness_middle': self._safe_int_runtime(pick('line_thickness_middle', default=4), 4),
+            'line_thickness_outer': self._safe_int_runtime(pick('line_thickness_outer', default=4), 4),
+            'line_brightness_inner': self._safe_float_runtime(pick('line_brightness_inner', default=1.0), 1.0, allow_none=False),
+            'line_brightness_middle': self._safe_float_runtime(pick('line_brightness_middle', default=1.0), 1.0, allow_none=False),
+            'line_brightness_outer': self._safe_float_runtime(pick('line_brightness_outer', default=1.0), 1.0, allow_none=False),
+            'drop_max_drop_px': self._safe_float_runtime(pick('drop_max_drop_px', default=0.0), 0.0, allow_none=False),
+            'drop_max_step_px': self._safe_float_runtime(pick('drop_max_step_px', default=55.0), 55.0, allow_none=False),
+            'drop_near_distance': self._safe_float_runtime(pick('drop_near_distance', default=None), None, allow_none=True),
+            'drop_far_distance': self._safe_float_runtime(pick('drop_far_distance', default=None), None, allow_none=True),
+            'thickness_near_factor': self._safe_float_runtime(pick('thickness_near_factor', default=1.0), 1.0, allow_none=False),
+            'thickness_far_factor': self._safe_float_runtime(pick('thickness_far_factor', default=1.0), 1.0, allow_none=False),
+            'thickness_max_step_px': self._safe_float_runtime(pick('thickness_max_step_px', default=55.0), 55.0, allow_none=False),
+            'thickness_near_distance': self._safe_float_runtime(pick('thickness_near_distance', default=None), None, allow_none=True),
+            'thickness_far_distance': self._safe_float_runtime(pick('thickness_far_distance', default=None), None, allow_none=True),
+            'edge_margin_ratio': self._safe_float_runtime(pick('edge_margin_ratio', default=0.0), 0.0, allow_none=False),
+        }
+
+        # 基本保护：亮度限定到 0~1；线宽、虚线长度、步长等给出合理下限。
+        for k in ('line_brightness_inner', 'line_brightness_middle', 'line_brightness_outer'):
+            try:
+                opts[k] = max(0.0, min(1.0, float(opts[k])))
+            except Exception:
+                opts[k] = 1.0
+        for k in ('line_thickness_inner', 'line_thickness_middle', 'line_thickness_outer'):
+            opts[k] = max(1, int(opts[k] or 1))
+        for k in ('fixed_dash_len_px', 'fixed_gap_len_px', 'drop_max_step_px', 'thickness_max_step_px'):
+            opts[k] = max(1.0, float(opts[k] or 1.0))
+        opts['edge_margin_ratio'] = max(0.0, min(0.30, float(opts['edge_margin_ratio'])))
+        return opts
+
+    def _runtime_camera_identity_candidates(self):
+        """运行时画线配置按摄像头匹配时使用的候选键。"""
+        raw = []
+        raw.extend(self._projector_identity_candidates())
+        raw.extend([
+            self.camera_identity,
+            self.boundary_projector_matched_key,
+            self.boundary_projector_camera_name,
+        ])
+        if isinstance(self.boundary_projector_aliases, (list, tuple)):
+            raw.extend(self.boundary_projector_aliases)
+        out = []
+        seen = set()
+        for value in raw:
+            if value is None:
+                continue
+            s = str(value).strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+        return out
+
+    def _match_runtime_camera_drawing(self, runtime_cfg: dict) -> dict:
+        """从运行时配置中匹配当前摄像头的 drawing。"""
+        if not isinstance(runtime_cfg, dict):
+            return {}
+
+        # 兼容旧版全局 drawing；如果用户还没迁移配置，不影响运行。
+        global_drawing = (
+            runtime_cfg.get('drawing')
+            or runtime_cfg.get('boundary_projector_drawing')
+            or runtime_cfg.get('line_drawing')
+        )
+
+        table = None
+        for key in ('cameras', 'camera_drawings', 'drawings_by_camera'):
+            if isinstance(runtime_cfg.get(key), dict):
+                table = runtime_cfg.get(key)
+                break
+
+        if not isinstance(table, dict):
+            return global_drawing if isinstance(global_drawing, dict) else {}
+
+        candidates = self._runtime_camera_identity_candidates()
+
+        # 1) 直接用 camera-xxxx / 中文名称等候选键匹配。
+        for candidate in candidates:
+            item = table.get(candidate)
+            if isinstance(item, dict):
+                d = item.get('drawing') if isinstance(item.get('drawing'), dict) else item
+                return d if isinstance(d, dict) else {}
+
+        # 2) 通过每个摄像头配置中的 camera_name / aliases / input_url / output_url 反向匹配。
+        candidates_set = set(candidates)
+        for key, item in table.items():
+            if not isinstance(item, dict):
+                continue
+            aliases = [str(key).strip()]
+            for alias_key in ('aliases', 'alias', 'camera_name', 'name', 'camera_id', 'cameraId', 'stream_id', 'streamId', 'input_url', 'output_url'):
+                alias_val = item.get(alias_key)
+                if isinstance(alias_val, (list, tuple)):
+                    aliases.extend([str(x).strip() for x in alias_val if str(x).strip()])
+                elif alias_val is not None and str(alias_val).strip():
+                    aliases.append(str(alias_val).strip())
+            for url_key in ('input_url', 'output_url'):
+                parsed = self._extract_camera_id_from_url(item.get(url_key))
+                if parsed:
+                    aliases.append(parsed)
+
+            if candidates_set.intersection(set(aliases)):
+                d = item.get('drawing') if isinstance(item.get('drawing'), dict) else item
+                return d if isinstance(d, dict) else {}
+
+        return global_drawing if isinstance(global_drawing, dict) else {}
+
+    @staticmethod
+    def _boundary_projector_draw_options_signature(opts: dict):
+        if not isinstance(opts, dict):
+            return ()
+        out = []
+        for k in sorted(opts.keys()):
+            v = opts.get(k)
+            if isinstance(v, bool):
+                out.append((k, bool(v)))
+            elif v is None:
+                out.append((k, None))
+            else:
+                try:
+                    out.append((k, round(float(v), 8)))
+                except Exception:
+                    out.append((k, str(v)))
+        return tuple(out)
+
+    def _reload_boundary_projector_runtime_config_if_changed(self, force: bool = False) -> bool:
+        """每隔约1秒检查运行时配置是否变化；变化后刷新画线参数并清空 overlay 缓存。"""
+        now = time.time()
+        if not force and (now - self._last_boundary_projector_runtime_config_check_ts) < 1.0:
+            return False
+        self._last_boundary_projector_runtime_config_check_ts = now
+
+        runtime_path = self._find_projector_runtime_config_path()
+        if not runtime_path:
+            # 没有独立运行时配置时，使用 zone_projector 的默认参数，保持兼容。
+            if force and not self._boundary_projector_draw_options:
+                self._boundary_projector_draw_options = self._extract_boundary_projector_draw_options({})
+            return False
+
+        file_sig = self._projector_config_file_sig(runtime_path)
+        if not force and file_sig == self._boundary_projector_runtime_config_sig:
+            return False
+
+        try:
+            with open(runtime_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                data = {}
+            old_sig = self._boundary_projector_draw_options_signature(self._boundary_projector_draw_options)
+            self._boundary_projector_runtime_config_path = str(runtime_path)
+            self._boundary_projector_runtime_config_sig = file_sig
+            self._boundary_projector_draw_options = self._extract_boundary_projector_draw_options(data)
+            new_sig = self._boundary_projector_draw_options_signature(self._boundary_projector_draw_options)
+            if force or new_sig != old_sig:
+                self._clear_boundary_overlay_cache()
+                logging.info(
+                    f"[{self.name}] 保护区画线运行时配置已刷新: {runtime_path}, "
+                    f"draw_options={self._boundary_projector_draw_options}"
+                )
+                return True
+            return False
+        except Exception as e:
+            now = time.time()
+            if now - self._last_boundary_projector_runtime_config_error_ts >= 5.0:
+                logging.error(f"[{self.name}] 读取保护区画线运行时配置失败: {runtime_path}, err={e}")
+                self._last_boundary_projector_runtime_config_error_ts = now
+            return False
+
     def _match_projector_config(self) -> dict:
         """
         合并投影配置。优先级：
@@ -522,6 +791,15 @@ class StreamProcessor:
             ground_alt = float(cfg.get('ground_alt', cfg.get('groundAlt', 0.0)) or 0.0)
             line_thickness = int(cfg.get('line_thickness', cfg.get('lineThickness', 8)) or 8)
             cache_overlay = bool(cfg.get('cache_overlay', cfg.get('cacheOverlay', True)))
+            self.boundary_projector_matched_key = cfg.get('_matched_key')
+            self.boundary_projector_camera_name = cfg.get('camera_name') or cfg.get('name')
+            aliases = cfg.get('aliases') or cfg.get('alias') or []
+            if isinstance(aliases, (list, tuple)):
+                self.boundary_projector_aliases = [str(x).strip() for x in aliases if str(x).strip()]
+            elif aliases is not None and str(aliases).strip():
+                self.boundary_projector_aliases = [str(aliases).strip()]
+            else:
+                self.boundary_projector_aliases = []
 
             projector_kwargs = cfg.get('projector_kwargs') or cfg.get('projectorKwargs') or {}
             if not isinstance(projector_kwargs, dict):
@@ -533,6 +811,7 @@ class StreamProcessor:
             self.boundary_projector_line_thickness = max(1, line_thickness)
             self.boundary_projector_cache_overlay = cache_overlay
             self.boundary_projector_enabled = True
+            self._reload_boundary_projector_runtime_config_if_changed(force=True)
 
             # 如果 API 支持缓存，启动时预热一次 JSON，避免第一帧卡顿。
             try:
@@ -639,6 +918,15 @@ class StreamProcessor:
             ground_alt = float(cfg.get('ground_alt', cfg.get('groundAlt', 0.0)) or 0.0)
             line_thickness = int(cfg.get('line_thickness', cfg.get('lineThickness', 8)) or 8)
             cache_overlay = bool(cfg.get('cache_overlay', cfg.get('cacheOverlay', True)))
+            self.boundary_projector_matched_key = cfg.get('_matched_key')
+            self.boundary_projector_camera_name = cfg.get('camera_name') or cfg.get('name')
+            aliases = cfg.get('aliases') or cfg.get('alias') or []
+            if isinstance(aliases, (list, tuple)):
+                self.boundary_projector_aliases = [str(x).strip() for x in aliases if str(x).strip()]
+            elif aliases is not None and str(aliases).strip():
+                self.boundary_projector_aliases = [str(aliases).strip()]
+            else:
+                self.boundary_projector_aliases = []
 
             self.boundary_projector_info = info
             self.boundary_projector_border_json = border_json
@@ -647,6 +935,8 @@ class StreamProcessor:
             self.boundary_projector_cache_overlay = cache_overlay
             self.boundary_projector_enabled = True
             self._boundary_projector_config_sig = self._projector_config_file_sig(config_path)
+            # 当前摄像头匹配信息可能变化；即使运行时配置文件本身未变，也需要重新匹配该摄像头的 drawing。
+            self._reload_boundary_projector_runtime_config_if_changed(force=True)
 
             new_runtime_sig = (
                 str(self.boundary_projector_border_json),
@@ -696,6 +986,7 @@ class StreamProcessor:
             )
         except Exception:
             projector_sig = ()
+        draw_options_sig = self._boundary_projector_draw_options_signature(self._boundary_projector_draw_options)
         return (
             self.camera_identity,
             int(w), int(h),
@@ -704,6 +995,8 @@ class StreamProcessor:
             round(float(self.boundary_projector_ground_alt), 8),
             int(self.boundary_projector_line_thickness),
             projector_sig,
+            self._boundary_projector_runtime_config_sig,
+            draw_options_sig,
         )
 
     @staticmethod
@@ -726,6 +1019,7 @@ class StreamProcessor:
                 line_thickness=self.boundary_projector_line_thickness,
                 use_cache=True,
                 draw=True,
+                **self._boundary_projector_draw_options,
             )
         except TypeError:
             # 兼容旧签名，不过正式部署版 utils.zone_projector 支持 line_thickness/use_cache。
@@ -741,6 +1035,7 @@ class StreamProcessor:
     def _draw_boundary_projector(self, frame: np.ndarray, fid: Optional[int] = None) -> np.ndarray:
         try:
             self._reload_boundary_projector_config_if_changed()
+            self._reload_boundary_projector_runtime_config_if_changed()
         except Exception as e:
             now = time.time()
             if now - self._last_boundary_projector_error_ts >= 5.0:
@@ -760,6 +1055,7 @@ class StreamProcessor:
                         ground_alt=self.boundary_projector_ground_alt,
                         line_thickness=self.boundary_projector_line_thickness,
                         use_cache=True,
+                        **self._boundary_projector_draw_options,
                     )
                 except TypeError:
                     _, out = self.boundary_projector.project_points_from_json(
@@ -817,6 +1113,7 @@ class StreamProcessor:
                 line_thickness=self.boundary_projector_line_thickness,
                 use_cache=True,
                 draw=False,
+                **self._boundary_projector_draw_options,
             )
             return projected_curves
         except TypeError:
@@ -2068,6 +2365,26 @@ def _resolve_global_projector_config_path(config: CameraConfig):
     return None
 
 
+
+def _resolve_global_projector_runtime_config_path(config: CameraConfig):
+    """查找只读运行时配置：画线样式参数 + PTZ映射/yaw偏移量。"""
+    path_candidates = [
+        getattr(config, 'camera_projector_runtime_config_path', None),
+        os.getenv('CAMERA_PROJECTOR_RUNTIME_CONFIG'),
+        project_root / 'config' / 'camera_projector_runtime_config.json',
+        project_root / 'config' / 'camera_projector_runtime_config_byGPT.json',
+        project_root / 'camera_projector_runtime_config.json',
+    ]
+    for p in path_candidates:
+        if not p:
+            continue
+        p = Path(str(p))
+        if not p.is_absolute():
+            p = project_root / p
+        if p.exists():
+            return str(p)
+    return None
+
 def _env_flag_enabled(name: str, default: bool = True) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -2109,6 +2426,7 @@ def main():
     ptz_updater = None
     if start_realtime_ptz_config_updater is not None:
         ptz_config_path = _resolve_global_projector_config_path(config)
+        ptz_runtime_config_path = _resolve_global_projector_runtime_config_path(config)
         ptz_enabled = _env_flag_enabled('CAMERA_PROJECTOR_REALTIME_PTZ_ENABLED', True)
         ptz_enabled = bool(getattr(config, 'camera_projector_realtime_ptz_enabled', ptz_enabled)) and ptz_enabled
 
@@ -2120,6 +2438,7 @@ def main():
                 request_timeout=float(getattr(config, 'camera_projector_ptz_request_timeout', 1.5) or 1.5),
                 verify_ssl=bool(getattr(config, 'camera_projector_ptz_verify_ssl', False)),
                 logger=logging.getLogger(__name__),
+                runtime_config_path=ptz_runtime_config_path,
             )
         elif ptz_enabled and not ptz_config_path:
             logging.warning("实时PTZ同步未启动：找不到 camera_projector_config.json")
