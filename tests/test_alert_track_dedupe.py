@@ -12,7 +12,7 @@ class _DummyHandler:
     def __init__(self):
         self.calls = []
 
-    def handle_alert(self, alert_event, frame, target_info, frame_ts=None):
+    def handle_alert(self, alert_event, frame, target_info, frame_ts=None, raw_frame=None):
         self.calls.append({
             'event_id': alert_event.event_id,
             'rule_id': alert_event.rule_id,

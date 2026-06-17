@@ -113,6 +113,7 @@ class AlertHandler:
         self._frame_sequence = 0
         self.validation_image_mae_threshold = 8.0
         self.validation_video_mae_threshold = 12.0
+        self.save_raw_image = bool(alarm_cfg.get('save_raw_image', True))
 
     @staticmethod
     def _safe_path_component(value: str) -> str:
@@ -176,10 +177,13 @@ class AlertHandler:
             logging.error(f"collect_clip_frame 异常: {e}")
 
     def handle_alert(self, alert_event: AlertEvent, frame: np.ndarray = None,
-                     target_info: dict = None, frame_ts: Optional[float] = None):
+                     target_info: dict = None, frame_ts: Optional[float] = None,
+                     raw_frame: np.ndarray = None):
         try:
             frame_for_alert = frame if frame is not None else self._latest_push_frame
             alert_image_path = self._save_alert_image(alert_event, frame_for_alert)
+            if self.save_raw_image and raw_frame is not None:
+                self._save_raw_image(alert_event, raw_frame)
             if frame_for_alert is not None:
                 trigger_ts = float(frame_ts if frame_ts is not None else time.time())
                 self._start_clip_job(alert_event, frame_for_alert, alert_image_path, trigger_ts, target_info=target_info)
@@ -199,6 +203,22 @@ class AlertHandler:
             return path
         except Exception as e:
             logging.error(f"保存告警图片失败: {e}")
+            return ""
+
+    def _save_raw_image(self, event: AlertEvent, raw_frame: np.ndarray) -> str:
+        """保存原始帧（无标注）到 raw/ 子目录，不上传、不上报"""
+        if raw_frame is None:
+            return ""
+        try:
+            ts_epoch = float(getattr(event, 'timestamp', time.time()) or time.time())
+            ts = time.strftime("%Y%m%d-%H%M%S", time.localtime(ts_epoch))
+            fname = f"alert_{event.rule_id}_{ts}_raw.jpg"
+            path = os.path.join(self._ensure_output_dir("raw", ts_epoch), fname)
+            cv2.imwrite(path, raw_frame)
+            logging.info(f"原始图片已保存: {path}")
+            return path
+        except Exception as e:
+            logging.warning(f"保存原始图片失败（不影响告警流程）: {e}")
             return ""
 
     def save_suppressed_image(
@@ -570,7 +590,8 @@ class AlertSystem:
     def process_frame_alerts(self, frame: np.ndarray, detection_dict: dict,
                              original_frame: np.ndarray = None,
                              target_info: dict = None,
-                             frame_ts: Optional[float] = None):
+                             frame_ts: Optional[float] = None,
+                             raw_frame: np.ndarray = None):
         if not self.alert_handler:
             now = time.time()
             if now - self._last_uninit_warn > 300:
@@ -631,7 +652,7 @@ class AlertSystem:
                         self._alerted_track_ids.setdefault(rule_id, set()).update(new_track_ids)
                     logging.warning(f"[AlertSystem] 触发告警: {rule_id} val={val:.2f}")
                     try:
-                        self.alert_handler.handle_alert(event, frame, target_info, frame_ts=frame_ts)
+                        self.alert_handler.handle_alert(event, frame, target_info, frame_ts=frame_ts, raw_frame=raw_frame)
                     except Exception as e:
                         logging.error(f"告警处理异常: {e}")
                 else:

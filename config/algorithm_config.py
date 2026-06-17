@@ -254,6 +254,7 @@ class CameraConfig:
         self.video_buffer_seconds = alarm.get('video_buffer_seconds', 12)
         self.video_pre_alert_seconds = alarm.get('video_pre_alert_seconds', 5)
         self.video_post_alert_seconds = alarm.get('video_post_alert_seconds', 5)
+        self.save_raw_image = alarm.get('save_raw_image', True)
 
     def _load_video_config(self):
         video = self.config.get('video', {})
@@ -352,6 +353,7 @@ class CameraConfig:
             'video_buffer_seconds': self.video_buffer_seconds,
             'video_pre_alert_seconds': self.video_pre_alert_seconds,
             'video_post_alert_seconds': self.video_post_alert_seconds,
+            'save_raw_image': self.save_raw_image,
         }
 
     def _build_capture_options(self, stream_url: str) -> str:

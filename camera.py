@@ -1500,6 +1500,7 @@ class StreamProcessor:
             alert_detection_dict = {}
             alert_target_info = None
             alert_frame = None
+            alert_raw_frame = None
             latest_result = self.inference_scheduler.get_latest_result(self.stream_tracking_key)
             if latest_result:
                 result_fid = int(latest_result.get('frame_id', 0) or 0)
@@ -1518,6 +1519,7 @@ class StreamProcessor:
                         alert_detection_dict = dict(alert_payload.get('detection_dict', {}) or {})
                         alert_target_info = dict(alert_payload.get('target_info', {}) or {})
                         alert_frame = alert_payload.get('frame')
+                        alert_raw_frame = alert_payload.get('raw_frame')
                     self._last_applied_result_frame_id = result_fid
                 else:
                     # 记录推理结果被丢弃的原因，便于调试
@@ -1555,6 +1557,7 @@ class StreamProcessor:
                         alert_detection_dict,
                         target_info=alert_target_info,
                         frame_ts=frame_ts,
+                        raw_frame=alert_raw_frame,
                     )
 
         except Exception as e:
@@ -1644,6 +1647,7 @@ class StreamProcessor:
             return None
         return {
             'frame': confirmed_frame,
+            'raw_frame': reference_frame,
             'detection_dict': {
                 'alarm_any_detection': float(target_info.get('track_count', 0)),
             },

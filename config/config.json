@@ -186,7 +186,8 @@
     "video_clip_seconds": 10,
     "video_buffer_seconds": 12,
     "video_pre_alert_seconds": 5,
-    "video_post_alert_seconds": 5
+    "video_post_alert_seconds": 5,
+    "save_raw_image": true
   },
   "application": {
     "output_directory": "./res",
