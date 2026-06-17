@@ -225,7 +225,8 @@ class CameraConfig:
     def _load_class_config(self):
         classes = self.config.get('classes', {})
         filtered = classes.get('filtered_classes', {}) if isinstance(classes, dict) else {}
-        self.detection_filtered_classes_by_id = filtered.get('detection_filtered_classes_by_id', {})
+        # 2026-06-16 16:49 修改目的：类别过滤改为全局类别名配置，不再按算法ID拆分。
+        self.detection_filtered_class_names = filtered.get('detection_filtered_class_names', [])
 
     def _load_performance_config(self):
         perf = self.config.get('performance', {})

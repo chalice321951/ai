@@ -171,7 +171,7 @@
   ],
   "classes": {
     "filtered_classes": {
-      "detection_filtered_classes_by_id": {}
+      "detection_filtered_class_names": ["guanche"]
     }
   },
   "performance": {

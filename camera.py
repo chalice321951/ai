@@ -208,6 +208,10 @@ class StreamProcessor:
         self._last_infer_result_ts = 0.0
         self._last_infer_result_count = 0
         self._last_target_seen_ts = 0.0
+        # 2026-06-16 16:49 修改目的：缓存全局类别名称过滤规则，当前用于过滤 guanche。
+        self._detection_filtered_class_names = self._normalize_filtered_class_names(
+            getattr(self.config, 'detection_filtered_class_names', [])
+        )
         self._last_motion_level = 0.0
         self._motion_prev_small: Optional[np.ndarray] = None
         self._capture_watchdog_interval = max(
@@ -1562,9 +1566,9 @@ class StreamProcessor:
         total = 0
         class_names = set()
         for aid, res in results.items():
-            cnt = self._count_detections(res)
-            total += cnt
             model_detections = self._extract_raw_detections(res, aid, fid=fid)
+            # 2026-06-16 16:49 修改目的：过滤后再计数，避免被过滤类别继续触发告警。
+            total += len(model_detections)
             raw_detections.extend(model_detections)
             for det in model_detections:
                 c = str(det.get('class_name', '')).strip()
@@ -1826,6 +1830,24 @@ class StreamProcessor:
             pass
         return 0
 
+    @staticmethod
+    def _normalize_filtered_class_names(raw_value) -> set:
+        # 2026-06-16 16:49 修改目的：将类别名过滤配置统一为小写集合，避免大小写和空格导致过滤失效。
+        if raw_value in (None, ''):
+            return set()
+        raw_items = raw_value if isinstance(raw_value, (list, tuple, set)) else [raw_value]
+        class_names = set()
+        for item in raw_items:
+            class_name = str(item or '').strip().lower()
+            if class_name:
+                class_names.add(class_name)
+        return class_names
+
+    def _should_keep_detection_class(self, class_name: str) -> bool:
+        if not self._detection_filtered_class_names:
+            return True
+        return str(class_name or '').strip().lower() not in self._detection_filtered_class_names
+
     def _extract_raw_detections(self, results, algo_id: str, fid: Optional[int] = None):
         detections = []
         try:
@@ -1850,6 +1872,9 @@ class StreamProcessor:
                 conf = float(confs[i])
                 cls_id = int(clss[i])
                 label = names.get(cls_id, str(cls_id)) if isinstance(names, dict) else str(cls_id)
+                # 2026-06-16 16:49 修改目的：按类别名过滤检测框，后续画框、跟踪、告警共用同一结果。
+                if not self._should_keep_detection_class(label):
+                    continue
                 detections.append({
                     'xyxy': (x1, y1, x2, y2),
                     'color': color,
