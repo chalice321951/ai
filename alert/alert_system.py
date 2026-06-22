@@ -182,11 +182,12 @@ class AlertHandler:
         try:
             frame_for_alert = frame if frame is not None else self._latest_push_frame
             alert_image_path = self._save_alert_image(alert_event, frame_for_alert)
+            raw_image_path = ""
             if self.save_raw_image and raw_frame is not None:
-                self._save_raw_image(alert_event, raw_frame)
+                raw_image_path = self._save_raw_image(alert_event, raw_frame)
             if frame_for_alert is not None:
                 trigger_ts = float(frame_ts if frame_ts is not None else time.time())
-                self._start_clip_job(alert_event, frame_for_alert, alert_image_path, trigger_ts, target_info=target_info)
+                self._start_clip_job(alert_event, frame_for_alert, alert_image_path, trigger_ts, target_info=target_info, raw_image_path=raw_image_path)
         except Exception as e:
             logging.error(f"handle_alert 异常: {e}")
 
@@ -206,7 +207,7 @@ class AlertHandler:
             return ""
 
     def _save_raw_image(self, event: AlertEvent, raw_frame: np.ndarray) -> str:
-        """保存原始帧（无标注）到 raw/ 子目录，不上传、不上报"""
+        """保存原始帧（无标注）到 raw/ 子目录，返回本地路径供后续上传"""
         if raw_frame is None:
             return ""
         try:
@@ -253,6 +254,7 @@ class AlertHandler:
         image_path: str,
         trigger_ts: float,
         target_info: Optional[dict] = None,
+        raw_image_path: str = "",
     ):
         pre_frames = []
         trigger_sequence = 0
@@ -286,6 +288,7 @@ class AlertHandler:
             'deadline': trigger_ts + self.post_alert_seconds,
             'max_frames': self.buffer_seconds * self.clip_fps,
             'alert_image_path': image_path,
+            'raw_image_path': raw_image_path,
             'skip_next_append': True,
             'trigger_sequence': trigger_sequence,
             'validation_boxes': list((target_info or {}).get('_validation_boxes', []) or []),
@@ -343,6 +346,7 @@ class AlertHandler:
                 image_url, video_url = self._upload_alert_assets(
                     alert_image_path=job.get('alert_image_path', ''),
                     alert_video_path=clip_path if video_saved else '',
+                    raw_image_path=job.get('raw_image_path', ''),
                 )
                 self._report_alarm_event(job.get('event'), image_url, video_url)
             except Exception as e:
@@ -468,7 +472,8 @@ class AlertHandler:
             except Exception:
                 pass
 
-    def _upload_alert_assets(self, alert_image_path: str, alert_video_path: str):
+    def _upload_alert_assets(self, alert_image_path: str, alert_video_path: str,
+                             raw_image_path: str = ""):
         """上传图片/视频到 MinIO。"""
         image_url = ""
         video_url = ""
@@ -486,6 +491,18 @@ class AlertHandler:
                         logging.info(f"告警图片上传成功: {image_url}")
                 except Exception as e:
                     logging.error(f"图片上传失败: {e}")
+
+            if raw_image_path and os.path.exists(raw_image_path):
+                try:
+                    raw_url = minio_update.minio_interface(
+                        self.stream_cfg, "alarm_raw",
+                        os.path.basename(raw_image_path), raw_image_path,
+                        minio_config=self.config,
+                    )
+                    if raw_url:
+                        logging.info(f"原始图片上传成功: {raw_url}")
+                except Exception as e:
+                    logging.error(f"原始图片上传失败: {e}")
 
             if alert_video_path and os.path.exists(alert_video_path):
                 try:
