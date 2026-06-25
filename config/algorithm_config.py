@@ -105,6 +105,7 @@ class CameraConfig:
         self._load_class_config()
         self._load_performance_config()
         self._load_alarm_config()
+        self._load_ppe_config()
         self._load_video_config()
         self._load_application_config()
         self._load_minio_config()
@@ -222,6 +223,14 @@ class CameraConfig:
             }
         }
 
+        # 多模型独立配置：每个模型的类别过滤列表
+        # 格式: {"3001": ["guanche"], "3099": []}
+        self.model_class_filters = models.get('model_class_filters', {})
+
+        # 多模型独立配置：每个模型的推理间隔
+        # 格式: {"3001": 3, "3099": 5}
+        self.model_intervals = models.get('model_intervals', {})
+
     def _load_class_config(self):
         classes = self.config.get('classes', {})
         filtered = classes.get('filtered_classes', {}) if isinstance(classes, dict) else {}
@@ -255,6 +264,17 @@ class CameraConfig:
         self.video_pre_alert_seconds = alarm.get('video_pre_alert_seconds', 5)
         self.video_post_alert_seconds = alarm.get('video_post_alert_seconds', 5)
         self.save_raw_image = alarm.get('save_raw_image', True)
+
+        # 报警等级模式开关：true=空间分级（红1/黄2/橙3），false=固定等级
+        self.use_spatial_level = bool(alarm.get('use_spatial_level', True))
+        # 固定报警等级（use_spatial_level=false 时使用，默认为 1）
+        self.fixed_alarm_level = int(alarm.get('fixed_alarm_level', 1))
+
+    def _load_ppe_config(self):
+        """加载 PPE（安全帽/反光衣）检测配置"""
+        ppe = self.config.get('ppe', {})
+        self.ppe_enabled = bool(ppe.get('enabled', False))
+        self.ppe_config = ppe if self.ppe_enabled else {}
 
     def _load_video_config(self):
         video = self.config.get('video', {})
@@ -314,6 +334,58 @@ class CameraConfig:
         self.platform_report_enabled = bool(platform.get('report_enabled', False))
         self.platform_login_timeout = float(platform.get('login_timeout', 10.0) or 10.0)
         self.platform_report_timeout = float(platform.get('report_timeout', 10.0) or 10.0)
+
+    def validate(self) -> List[str]:
+        """
+        验证配置完整性。
+
+        Returns:
+            警告/错误信息列表，空列表表示配置正确
+        """
+        warnings = []
+
+        # 检查模型文件
+        for model in self.model_definitions:
+            model_path = model.get('path', '')
+            if model_path and not os.path.exists(model_path):
+                warnings.append(f"模型文件不存在: [{model['id']}] {model_path}")
+
+        # 检查 PPE 配置
+        if self.ppe_enabled:
+            ppe_detection = self.ppe_config.get('detection', {})
+            ppe_attr = self.ppe_config.get('attribute', {})
+
+            # 检查 PPE 属性分类模型
+            attr_model_path = ppe_attr.get('model_path', '')
+            if attr_model_path and not os.path.exists(attr_model_path):
+                warnings.append(f"PPE 属性分类模型不存在: {attr_model_path}")
+
+            # 检查 PPE 配置完整性
+            ppe_model_id = ppe_detection.get('model_id', '')
+            if not ppe_model_id:
+                warnings.append("PPE 配置缺少 detection.model_id")
+            else:
+                # 检查 model_id 是否在 model_mappings 中注册
+                registered_ids = {m.get('id') for m in self.model_definitions}
+                if ppe_model_id not in registered_ids:
+                    warnings.append(f"PPE detection.model_id '{ppe_model_id}' 未在 model_mappings 中注册")
+
+        # 检查 tracker 配置
+        tracker_path = self.tracking_tracker
+        if tracker_path and not os.path.exists(tracker_path):
+            # tracker 文件可能在 ultralytics 包内，只做警告
+            warnings.append(f"ByteTrack 配置文件不存在（可能在 ultralytics 包内）: {tracker_path}")
+
+        # 检查流配置
+        streams = self.config.get('streams', [])
+        if not streams:
+            warnings.append("未配置任何摄像头流")
+
+        for i, stream in enumerate(streams):
+            if not stream.get('input_url') and not stream.get('rtsp_url'):
+                warnings.append(f"流 {i} 缺少 input_url 或 rtsp_url")
+
+        return warnings
 
     def get_video_codec(self) -> str:
         return self.video_codec.value

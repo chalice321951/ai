@@ -10,6 +10,7 @@ import signal
 import subprocess
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional, Callable, Any
@@ -589,10 +590,14 @@ class AlertSystem:
         self._rules: Dict[str, AlertRule] = {}
         self._last_alert_times: Dict[str, float] = {}
         self._trigger_times: Dict[str, float] = {}
-        self._alerted_track_ids: Dict[str, set] = {}
+        # 组合键去重：(track_id, algo_id, class_name) -> True
+        # 使用 OrderedDict 保留插入顺序，支持精确"保留最近的 N 个"逻辑
+        self._alerted_track_keys: Dict[str, OrderedDict] = {}
         self._lock = threading.RLock()
         self.alert_handler: Optional[AlertHandler] = None
         self._last_uninit_warn = 0.0
+        # 每个规则的最大去重键数量，防止内存泄漏
+        self._max_track_keys_per_rule = 10000
 
     def initialize_alert_handler(self, stream_cfg: dict, result_path: str):
         self.alert_handler = AlertHandler(stream_cfg, result_path, self.config)
@@ -601,7 +606,7 @@ class AlertSystem:
     def add_rule(self, rule: AlertRule):
         with self._lock:
             self._rules[rule.rule_id] = rule
-            self._alerted_track_ids.setdefault(rule.rule_id, set())
+            self._alerted_track_keys.setdefault(rule.rule_id, OrderedDict())
             logging.info(f"告警规则已添加: {rule.rule_id}")
 
     def process_frame_alerts(self, frame: np.ndarray, detection_dict: dict,
@@ -624,23 +629,40 @@ class AlertSystem:
                 val = detection_dict.get(rule_id, 0.0)
                 triggered = val >= rule.threshold_value
                 tracking_enabled = False
-                current_track_ids = set()
+                # 组合键集合：(track_id, algo_id, class_name)
+                current_track_keys = set()
                 if isinstance(target_info, dict):
                     tracking_enabled = bool(target_info.get('tracking_enabled', False))
-                    for tid in list(target_info.get('track_ids', []) or []):
+
+                    # PPE 规则使用各自违规类型的 track_ids（从 detection_dict 获取）
+                    # 其他规则使用 target_info 中的 track_ids
+                    ppe_track_ids_key = f"{rule_id}_track_ids"
+                    if ppe_track_ids_key in detection_dict:
+                        # PPE 规则：使用该违规类型的精确 track_ids
+                        rule_track_ids = detection_dict[ppe_track_ids_key]
+                        algo_id = 'ppe'
+                        class_name = rule_id.replace('_violation', '')  # ppe_helmet / ppe_vest / ppe_multi
+                    else:
+                        # 普通规则：使用 target_info 中的 track_ids
+                        rule_track_ids = target_info.get('track_ids', [])
+                        algo_id = str(target_info.get('algo_id', '') or '')
+                        class_name = str(target_info.get('class_name', '') or '')
+
+                    for tid in list(rule_track_ids or []):
                         if tid in (None, ''):
                             continue
                         try:
-                            current_track_ids.add(int(tid))
+                            track_key = (int(tid), algo_id, class_name)
                         except Exception:
-                            current_track_ids.add(tid)
+                            track_key = (tid, algo_id, class_name)
+                        current_track_keys.add(track_key)
 
                 if triggered:
-                    new_track_ids = set()
-                    if tracking_enabled and current_track_ids:
-                        alerted_track_ids = self._alerted_track_ids.setdefault(rule_id, set())
-                        new_track_ids = current_track_ids - alerted_track_ids
-                        if not new_track_ids:
+                    new_track_keys = set()
+                    if tracking_enabled and current_track_keys:
+                        alerted_track_keys = self._alerted_track_keys.setdefault(rule_id, OrderedDict())
+                        new_track_keys = current_track_keys - set(alerted_track_keys.keys())
+                        if not new_track_keys:
                             continue
                     if rule_id not in self._trigger_times:
                         self._trigger_times[rule_id] = now
@@ -651,6 +673,8 @@ class AlertSystem:
                     if now - last < rule.cooldown_seconds:
                         continue
                     self._last_alert_times[rule_id] = now
+                    # 提取 new_track_ids 用于兼容
+                    new_track_ids = [k[0] for k in new_track_keys]
                     event = AlertEvent(
                         event_id=f"{rule_id}_{int(now)}",
                         rule_id=rule_id,
@@ -663,10 +687,16 @@ class AlertSystem:
                         metadata={
                             'target_info': target_info,
                             'new_track_ids': sorted(new_track_ids, key=lambda item: str(item)),
+                            'new_track_keys': [list(k) for k in new_track_keys],
                         } if target_info else {},
                     )
-                    if tracking_enabled and new_track_ids:
-                        self._alerted_track_ids.setdefault(rule_id, set()).update(new_track_ids)
+                    if tracking_enabled and new_track_keys:
+                        alerted_keys = self._alerted_track_keys.setdefault(rule_id, OrderedDict())
+                        for k in new_track_keys:
+                            alerted_keys[k] = True
+                        # 限制去重键数量，防止内存泄漏（按插入顺序删除最旧的）
+                        while len(alerted_keys) > self._max_track_keys_per_rule:
+                            alerted_keys.popitem(last=False)
                     logging.warning(f"[AlertSystem] 触发告警: {rule_id} val={val:.2f}")
                     try:
                         self.alert_handler.handle_alert(event, frame, target_info, frame_ts=frame_ts, raw_frame=raw_frame)

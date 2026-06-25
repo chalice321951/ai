@@ -93,7 +93,7 @@ from stream.enhanced_video_processor import (
     VideoStreamStatus,
 )
 from stream.capture_process import CaptureProxy
-from inference.unified_scheduler import UnifiedInferenceScheduler
+from inference.parallel_scheduler import ParallelInferenceScheduler
 from alert.alert_system import AlertSystem, create_count_threshold_rule, AlertLevel
 from tracking.simple_tracker import SimpleTracker
 from utils.alarm_level import classify_point_alarm_level_uv_details
@@ -185,6 +185,7 @@ class StreamProcessor:
         self._pending_infer = False
         self._crash_trace_enabled = bool(getattr(self.config, 'crash_trace_enabled', False))
         self._last_detection_overlays = []
+        self._last_ppe_result = None
         self._last_tracking_summary = {
             'track_count': 0,
             'track_ids': [],
@@ -284,6 +285,36 @@ class StreamProcessor:
             cooldown=cooldown,
         )
         self.alert_system.add_rule(rule)
+
+        # PPE 告警规则
+        ppe_enabled = bool(getattr(self.config, 'ppe_enabled', False))
+        if ppe_enabled:
+            ppe_config = getattr(self.config, 'ppe_config', {})
+            ppe_alarm = ppe_config.get('alarm', {})
+            dedup_seconds = float(ppe_alarm.get('track_dedup_seconds', 60))
+
+            self.alert_system.add_rule(create_count_threshold_rule(
+                rule_id="ppe_helmet_violation",
+                threshold=1,
+                description="未佩戴安全帽",
+                level=AlertLevel.HIGH,
+                cooldown=dedup_seconds,
+            ))
+            self.alert_system.add_rule(create_count_threshold_rule(
+                rule_id="ppe_vest_violation",
+                threshold=1,
+                description="未穿反光衣",
+                level=AlertLevel.MEDIUM,
+                cooldown=dedup_seconds,
+            ))
+            self.alert_system.add_rule(create_count_threshold_rule(
+                rule_id="ppe_multi_violation",
+                threshold=1,
+                description="未佩戴安全帽且未穿反光衣",
+                level=AlertLevel.CRITICAL,
+                cooldown=dedup_seconds,
+            ))
+            logging.info(f"[{self.name}] PPE 告警规则已添加, dedup={dedup_seconds}s")
     def _build_capture_options(self) -> str:
         return self.config.get_capture_options(self.input_url)
 
@@ -1150,6 +1181,7 @@ class StreamProcessor:
     def _reset_stream_runtime_state(self, clear_timestamps: bool = False):
         self.inference_scheduler.reset_stream_tracking(self.stream_tracking_key)
         self._last_detection_overlays = []
+        self._last_ppe_result = None
         self._last_tracking_summary = {
             'track_count': 0,
             'track_ids': [],
@@ -1544,6 +1576,9 @@ class StreamProcessor:
             rendered_frame = self._draw_boundary_projector(rendered_frame, fid=fid)
             if self._last_detection_overlays:
                 rendered_frame = self._draw_detection_overlays(rendered_frame, self._last_detection_overlays)
+            # PPE 统计信息叠加
+            if self._last_ppe_result is not None:
+                rendered_frame = self._draw_ppe_statistics(rendered_frame, self._last_ppe_result)
             rendered_frame = self._draw_ai_badge(rendered_frame, fid=fid)
             self._enqueue_rendered_frame(rendered_frame)
             frame_ts = time.time()
@@ -1566,9 +1601,14 @@ class StreamProcessor:
     def _process_infer_results(self, results, fid):
         """处理推理结果，更新检测覆盖层"""
         raw_detections = []
+        ppe_result = None
         total = 0
         class_names = set()
         for aid, res in results.items():
+            # PPE 结果单独处理
+            if aid == 'ppe':
+                ppe_result = res
+                continue
             model_detections = self._extract_raw_detections(res, aid, fid=fid)
             # 2026-06-16 16:49 修改目的：过滤后再计数，避免被过滤类别继续触发告警。
             total += len(model_detections)
@@ -1592,6 +1632,29 @@ class StreamProcessor:
                         track_ids.add(tid)
         else:
             overlays = self._build_overlays_from_detections(raw_detections)
+
+        # PPE 结果转 overlay
+        ppe_overlays = []
+        if ppe_result is not None:
+            ppe_config = getattr(self.config, 'ppe_config', {})
+            violation_color = ppe_config.get('rendering', {}).get('violation_color', [0, 0, 255])
+            ppe_overlays = ppe_result.get_violation_overlays(algo_id="ppe", color=tuple(violation_color))
+            overlays.extend(ppe_overlays)
+            # PPE track_ids 也加入
+            for overlay in ppe_overlays:
+                tid = overlay.get('track_id')
+                if tid not in (None, ''):
+                    try:
+                        track_ids.add(int(tid))
+                    except Exception:
+                        track_ids.add(tid)
+            # PPE 统计信息
+            ppe_stats = ppe_result.get_statistics()
+            logging.debug(f"[{self.name}] PPE 统计: {ppe_stats}")
+            # 缓存 PPE 结果用于渲染
+            self._last_ppe_result = ppe_result
+        else:
+            self._last_ppe_result = None
 
         alarm_count = len(track_ids) if tracking_enabled and track_ids else total
         if alarm_count > 0:
@@ -1645,12 +1708,35 @@ class StreamProcessor:
             except Exception as e:
                 logging.debug(f"[{self.name}] 保存未上报告警调试图失败: {e}")
             return None
+        # 构建 detection_dict，包含 PPE 违规计数和违规 track_ids
+        detection_dict = {
+            'alarm_any_detection': float(target_info.get('track_count', 0)),
+        }
+        # PPE 告警：统计各违规类型的数量，并收集每个类型的违规 track_ids
+        if ppe_overlays:
+            helmet_overlays = [o for o in ppe_overlays if o.get('class_name') == 'ppe_helmet']
+            vest_overlays = [o for o in ppe_overlays if o.get('class_name') == 'ppe_vest']
+            multi_overlays = [o for o in ppe_overlays if o.get('class_name') == 'ppe_multi']
+
+            detection_dict['ppe_helmet_violation'] = float(len(helmet_overlays))
+            detection_dict['ppe_vest_violation'] = float(len(vest_overlays))
+            detection_dict['ppe_multi_violation'] = float(len(multi_overlays))
+
+            # 每个违规类型独立的 track_ids，key 与 rule_id 一致（{rule_id}_track_ids）
+            detection_dict['ppe_helmet_violation_track_ids'] = [
+                o.get('track_id') for o in helmet_overlays if o.get('track_id') is not None
+            ]
+            detection_dict['ppe_vest_violation_track_ids'] = [
+                o.get('track_id') for o in vest_overlays if o.get('track_id') is not None
+            ]
+            detection_dict['ppe_multi_violation_track_ids'] = [
+                o.get('track_id') for o in multi_overlays if o.get('track_id') is not None
+            ]
+
         return {
             'frame': confirmed_frame,
             'raw_frame': reference_frame,
-            'detection_dict': {
-                'alarm_any_detection': float(target_info.get('track_count', 0)),
-            },
+            'detection_dict': detection_dict,
             'target_info': target_info,
         }
 
@@ -1692,6 +1778,18 @@ class StreamProcessor:
     ) -> Tuple[Optional[str], str, Dict[str, Any]]:
         if not isinstance(target_info, dict):
             return None, "no_target", {}
+
+        # ===== 新增：固定等级模式 =====
+        # 当 use_spatial_level=False 时，所有检测目标使用固定的报警等级
+        if not bool(getattr(self.config, 'use_spatial_level', True)):
+            fixed_level = int(getattr(self.config, 'fixed_alarm_level', 1))
+            return (
+                str(fixed_level),
+                "fixed_level",
+                {"alarm_level": fixed_level, "reason": "fixed_level"}
+            )
+        # ===== 结束新增 =====
+
         if not projected_curves or not self.boundary_projector_border_json:
             return None, "no_projected_curves", {}
         try:
@@ -1777,6 +1875,7 @@ class StreamProcessor:
             'alarm_level': None,
             'alarm_level_source': 'outside_orange_or_unresolved',
             'should_alert': bool(target_candidates),
+            'algo_id': '',  # 默认为空
         }
         if target_candidates:
             selected_candidate = target_candidates[0]
@@ -1789,6 +1888,7 @@ class StreamProcessor:
                 'v': selected_candidate.get('v'),
                 'track_id': selected_candidate.get('track_id'),
                 'confidence': selected_candidate.get('confidence'),
+                'algo_id': str(selected_candidate.get('algo_id', '') or ''),
                 'alarm_level_visible_colors': list(selected_candidate.get('alarm_level_visible_colors') or []),
                 'alarm_level_scan_y': selected_candidate.get('alarm_level_scan_y'),
                 'alarm_level_boundaries': list(selected_candidate.get('alarm_level_boundaries') or []),
@@ -1936,16 +2036,57 @@ class StreamProcessor:
             logging.debug(f"[{self.name}] 绘制AI标识异常: {e}")
         return frame
 
-    def _draw_detection_overlays(self, frame: np.ndarray, overlays) -> np.ndarray:
+    def _draw_ppe_statistics(self, frame: np.ndarray, ppe_result) -> np.ndarray:
+        """绘制 PPE 统计信息到画面右上角"""
         try:
-            for overlay in overlays or []:
+            stats = ppe_result.get_statistics()
+            lines = [
+                f"Total: {stats['total']}",
+                f"Compliant: {stats['compliant']}",
+                f"Violation: {stats['violation']}",
+                f"Helmet: {stats['helmet_violation']}",
+                f"Vest: {stats['vest_violation']}",
+            ]
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            thickness = 1
+            # 计算最大文本宽度
+            max_width = 0
+            text_height = 0
+            for line in lines:
+                (tw, th), _ = cv2.getTextSize(line, font, font_scale, thickness)
+                max_width = max(max_width, tw)
+                text_height = th
+            # 绘制背景
+            x = frame.shape[1] - max_width - 20
+            y = 10
+            line_height = int(text_height * 1.5)
+            total_height = line_height * len(lines)
+            cv2.rectangle(frame, (x, y), (x + max_width + 10, y + total_height + 10), (0, 0, 0), -1)
+            # 绘制文本
+            for i, line in enumerate(lines):
+                text_y = y + (i + 1) * line_height
+                cv2.putText(frame, line, (x + 5, text_y), font, font_scale, (255, 255, 255), thickness)
+        except Exception as e:
+            logging.debug(f"[{self.name}] 绘制PPE统计异常: {e}")
+        return frame
+
+    def _draw_detection_overlays(self, frame: np.ndarray, overlays) -> np.ndarray:
+        for overlay in overlays or []:
+            try:
                 x1, y1, x2, y2 = overlay['xyxy']
-                color = overlay['color']
-                text = overlay['text']
+                color = tuple(overlay.get('color', (0, 255, 0)))
+                # text 字段可能不存在，从其他字段构造默认值
+                text = overlay.get('text')
+                if not text:
+                    cls_name = overlay.get('class_name', '')
+                    conf = float(overlay.get('confidence', 0.0) or 0.0)
+                    text = f"{cls_name} {conf:.2f}".strip()
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(frame, text, (x1, max(y1 - 5, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-        except Exception as e:
-            logging.debug(f"[{self.name}] 绘制缓存框异常: {e}")
+            except Exception as e:
+                logging.debug(f"[{self.name}] 绘制单个 overlay 异常: {e}")
+                continue
         return frame
 
     def _draw_detections(self, frame: np.ndarray, results, algo_id: str) -> np.ndarray:
@@ -2292,7 +2433,7 @@ class CameraStreamManager:
 
     def __init__(self, config: CameraConfig):
         self.config = config
-        self.inference_scheduler = UnifiedInferenceScheduler(config)
+        self.inference_scheduler = ParallelInferenceScheduler(config)
         self._processors: Dict[str, StreamProcessor] = {}
         self._threads: Dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
@@ -2487,7 +2628,9 @@ def main():
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _signal_handler)
-    signal.signal(signal.SIGTERM, _signal_handler)
+    # Windows 不支持 SIGTERM
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, _signal_handler)
 
     manager.start_all(stream_list)
     logging.info("所有流已启动，进入主监控循环（Ctrl+C 退出）")
@@ -2549,7 +2692,13 @@ def _kill_child_processes():
 
 
 if __name__ == '__main__':
-    multiprocessing.set_start_method('forkserver', force=True)
+    # Windows 不支持 forkserver，使用默认的 spawn
+    import platform
+    if platform.system() != 'Windows':
+        try:
+            multiprocessing.set_start_method('forkserver', force=True)
+        except RuntimeError:
+            pass
     atexit.register(_kill_child_processes)
     sys.exit(main())
 

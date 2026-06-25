@@ -1,0 +1,233 @@
+# -*- coding: utf-8 -*-
+"""
+PPE 属性分类模型定义。
+
+使用 MobileNet V3 Small 作为骨干网络，进行安全帽和反光衣的属性分类。
+
+模型规格：
+- 输入: (batch_size, 3, 160, 160) RGB 图像，归一化到 [0, 1]
+- 输出: helmet_logits (batch_size,), vest_logits (batch_size,)
+- 后处理: sigmoid(logits) -> [0, 1] 概率
+
+三态判定：
+- prob >= pos_threshold -> "yes"
+- prob <= neg_threshold -> "no"
+- 否则 -> "unknown"
+"""
+import logging
+from typing import Tuple, Optional
+
+import numpy as np
+
+try:
+    import torch
+    import torch.nn as nn
+    from torchvision.models import mobilenet_v3_small
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    logging.warning("torch/torchvision 未安装，PPE 属性分类模型不可用")
+
+
+if TORCH_AVAILABLE:
+    class PPEAttrModel(nn.Module):
+        """
+        PPE 属性分类模型（MobileNet V3 Small）。
+
+        用于判断人体是否佩戴安全帽和反光衣。
+        """
+
+        def __init__(self, pretrained: bool = False):
+            """
+            初始化模型。
+
+            Args:
+                pretrained: 是否使用预训练权重
+            """
+            super().__init__()
+
+            # 加载 MobileNet V3 Small 骨干网络
+            backbone = mobilenet_v3_small(pretrained=pretrained)
+            self.features = backbone.features
+
+            # 全局平均池化
+            self.pool = nn.AdaptiveAvgPool2d(1)
+
+            # 投影层
+            self.projector = nn.Sequential(
+                nn.Linear(576, 128),
+                nn.ReLU(inplace=True),
+            )
+
+            # 双头分类
+            self.helmet_head = nn.Linear(128, 1)
+            self.vest_head = nn.Linear(128, 1)
+
+        def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+            """
+            前向传播。
+
+            Args:
+                x: 输入张量 (batch_size, 3, 160, 160)
+
+            Returns:
+                (helmet_logits, vest_logits) 元组
+            """
+            x = self.features(x)
+            x = self.pool(x).flatten(1)
+            x = self.projector(x)
+            helmet_logits = self.helmet_head(x).squeeze(-1)
+            vest_logits = self.vest_head(x).squeeze(-1)
+            return helmet_logits, vest_logits
+
+
+    def load_ppe_attr_model(
+        model_path: str,
+        device: str = 'cpu',
+    ) -> Optional[PPEAttrModel]:
+        """
+        加载 PPE 属性分类模型。
+
+        Args:
+            model_path: 模型文件路径
+            device: 设备 ('cpu' / 'cuda:0')
+
+        Returns:
+            模型实例，如果加载失败返回 None
+        """
+        try:
+            model = PPEAttrModel(pretrained=False)
+            state_dict = torch.load(model_path, map_location='cpu')
+            model.load_state_dict(state_dict)
+            model.eval()
+
+            if device.startswith('cuda') and torch.cuda.is_available():
+                model = model.to(device)
+
+            logging.info(f"[PPEAttrModel] 模型加载成功: {model_path}")
+            return model
+        except Exception as e:
+            logging.error(f"[PPEAttrModel] 模型加载失败: {e}")
+            return None
+
+
+    def preprocess_crop(
+        crop: np.ndarray,
+        image_size: int = 160,
+    ) -> Optional['torch.Tensor']:
+        """
+        预处理裁剪图像。
+
+        Args:
+            crop: 裁剪图像 (H, W, 3) BGR
+            image_size: 目标尺寸
+
+        Returns:
+            预处理后的张量 (1, 3, image_size, image_size)
+        """
+        import cv2
+
+        if crop.size == 0:
+            return None
+
+        # BGR -> RGB
+        crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+
+        # 缩放
+        crop_resized = cv2.resize(crop_rgb, (image_size, image_size))
+
+        # 归一化到 [0, 1]
+        crop_float = crop_resized.astype(np.float32) / 255.0
+
+        # ImageNet 标准化
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        crop_normalized = (crop_float - mean) / std
+
+        # HWC -> CHW
+        crop_chw = np.transpose(crop_normalized, (2, 0, 1))
+
+        # 转为张量
+        tensor = torch.from_numpy(crop_chw).unsqueeze(0).float()
+
+        return tensor
+
+
+    def classify_attributes(
+        model: PPEAttrModel,
+        crop: np.ndarray,
+        device: str = 'cpu',
+        image_size: int = 160,
+    ) -> Tuple[float, float]:
+        """
+        执行属性分类。
+
+        Args:
+            model: PPE 属性分类模型
+            crop: 裁剪图像 (H, W, 3) BGR
+            device: 设备
+            image_size: 目标尺寸
+
+        Returns:
+            (helmet_prob, vest_prob) 元组
+        """
+        # 预处理
+        tensor = preprocess_crop(crop, image_size)
+        if tensor is None:
+            return 0.5, 0.5
+
+        # 移到设备
+        if device.startswith('cuda') and torch.cuda.is_available():
+            tensor = tensor.to(device)
+
+        # 推理
+        with torch.no_grad():
+            helmet_logits, vest_logits = model(tensor)
+            helmet_prob = torch.sigmoid(helmet_logits).item()
+            vest_prob = torch.sigmoid(vest_logits).item()
+
+        return helmet_prob, vest_prob
+
+
+    def prob_to_state(
+        prob: float,
+        pos_threshold: float = 0.6,
+        neg_threshold: float = 0.3,
+    ) -> str:
+        """
+        概率转三态。
+
+        Args:
+            prob: 概率值 [0, 1]
+            pos_threshold: 正类阈值
+            neg_threshold: 负类阈值
+
+        Returns:
+            "yes" / "no" / "unknown"
+        """
+        if prob >= pos_threshold:
+            return "yes"
+        elif prob <= neg_threshold:
+            return "no"
+        return "unknown"
+
+else:
+    # torch 不可用时的占位符
+    class PPEAttrModel:
+        """占位符：torch 不可用"""
+        pass
+
+    def load_ppe_attr_model(*args, **kwargs):
+        logging.error("torch 未安装，无法加载 PPE 属性分类模型")
+        return None
+
+    def preprocess_crop(*args, **kwargs):
+        logging.error("torch 未安装，无法预处理图像")
+        return None
+
+    def classify_attributes(*args, **kwargs):
+        logging.error("torch 未安装，无法执行属性分类")
+        return 0.5, 0.5
+
+    def prob_to_state(prob, pos_threshold=0.6, neg_threshold=0.3):
+        return "unknown"

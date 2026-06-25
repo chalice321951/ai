@@ -48,6 +48,18 @@ class UnifiedInferenceScheduler:
             self._states.setdefault(key, self._new_stream_state())
 
     def submit_frame(self, stream_key: str, frame: np.ndarray, algo_id: str = None, frame_id: int = 0) -> bool:
+        """
+        提交帧进行推理。
+
+        Args:
+            stream_key: 流标识
+            frame: 输入帧
+            algo_id: 指定的算法 ID（模型 ID），None 表示使用默认模型
+            frame_id: 帧编号
+
+        Returns:
+            bool: 是否提交成功
+        """
         key = str(stream_key or "").strip()
         if not key or frame is None or not self.is_loaded():
             return False
@@ -61,6 +73,55 @@ class UnifiedInferenceScheduler:
             state["algo_id"] = algo_id
             state["submitted_count"] += 1
             state["last_submit_ts"] = now
+        self._wake_event.set()
+        return True
+
+    def submit_frame_multi_model(self, stream_key: str, frame: np.ndarray, model_ids: List[str] = None, frame_id: int = 0) -> bool:
+        """
+        提交帧到多个模型进行推理。
+
+        对于每个指定的模型 ID，创建独立的提交记录。
+        如果 model_ids 为 None，则提交到所有可用模型。
+
+        Args:
+            stream_key: 流标识
+            frame: 输入帧
+            model_ids: 模型 ID 列表，None 表示所有模型
+            frame_id: 帧编号
+
+        Returns:
+            bool: 是否提交成功
+        """
+        key = str(stream_key or "").strip()
+        if not key or frame is None or not self.is_loaded():
+            return False
+
+        # 获取可用模型列表
+        available_models = self._engine.get_model_ids()
+        if not available_models:
+            return False
+
+        target_models = model_ids if model_ids else available_models
+        # 过滤出可用的模型
+        target_models = [m for m in target_models if m in available_models]
+
+        if not target_models:
+            return False
+
+        frame_copy = np.ascontiguousarray(frame, dtype=np.uint8)
+        now = time.time()
+
+        with self._lock:
+            # 为每个模型创建独立的状态
+            for model_id in target_models:
+                state_key = f"{key}:{model_id}"
+                state = self._states.setdefault(state_key, self._new_stream_state())
+                state["latest_frame"] = frame_copy
+                state["latest_frame_id"] = int(frame_id or 0)
+                state["algo_id"] = model_id
+                state["submitted_count"] += 1
+                state["last_submit_ts"] = now
+
         self._wake_event.set()
         return True
 
@@ -78,11 +139,69 @@ class UnifiedInferenceScheduler:
                 "result_ts": state.get("latest_result_ts", 0.0),
             }
 
-    def reset_stream_tracking(self, stream_key: str):
+    def get_latest_result_multi_model(self, stream_key: str, model_ids: List[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        获取指定流的多模型推理结果。
+
+        Args:
+            stream_key: 流标识
+            model_ids: 模型 ID 列表，None 表示所有模型
+
+        Returns:
+            Dict 包含:
+                - frame_id: 帧编号
+                - results: Dict[model_id, results] 合并结果
+                - result_ts: 结果时间戳
+            如果没有结果返回 None
+        """
+        key = str(stream_key or "").strip()
+        if not key:
+            return None
+
+        # 获取可用模型列表
+        available_models = self._engine.get_model_ids()
+        target_models = model_ids if model_ids else available_models
+
+        merged_results = {}
+        latest_frame_id = 0
+        latest_result_ts = 0.0
+
+        with self._lock:
+            for model_id in target_models:
+                state_key = f"{key}:{model_id}"
+                state = self._states.get(state_key)
+                if state and state.get("latest_result") is not None:
+                    merged_results[model_id] = state["latest_result"]
+                    latest_frame_id = max(latest_frame_id, state.get("latest_result_frame_id", 0))
+                    latest_result_ts = max(latest_result_ts, state.get("latest_result_ts", 0.0))
+
+        if not merged_results:
+            return None
+
+        return {
+            "frame_id": latest_frame_id,
+            "results": merged_results,
+            "result_ts": latest_result_ts,
+        }
+
+    def reset_stream_tracking(self, stream_key: str, model_ids: List[str] = None):
+        """
+        重置流的追踪状态。
+
+        Args:
+            stream_key: 流标识
+            model_ids: 模型 ID 列表，None 表示重置所有模型的状态
+        """
         key = str(stream_key or "").strip()
         if not key:
             return
+
+        # 获取可用模型列表
+        available_models = self._engine.get_model_ids()
+        target_models = model_ids if model_ids else available_models
+
         with self._lock:
+            # 重置主状态
             state = self._states.get(key)
             if state:
                 state["latest_frame"] = None
@@ -91,14 +210,46 @@ class UnifiedInferenceScheduler:
                 state["latest_result_frame_id"] = 0
                 state["latest_result_ts"] = 0.0
                 state["processing"] = False
+
+            # 重置多模型状态
+            for model_id in target_models:
+                state_key = f"{key}:{model_id}"
+                state = self._states.get(state_key)
+                if state:
+                    state["latest_frame"] = None
+                    state["latest_frame_id"] = 0
+                    state["latest_result"] = None
+                    state["latest_result_frame_id"] = 0
+                    state["latest_result_ts"] = 0.0
+                    state["processing"] = False
+
         self._engine.reset_stream_tracking(key)
 
-    def remove_stream(self, stream_key: str):
+    def remove_stream(self, stream_key: str, model_ids: List[str] = None):
+        """
+        移除流的状态。
+
+        Args:
+            stream_key: 流标识
+            model_ids: 模型 ID 列表，None 表示移除所有模型的状态
+        """
         key = str(stream_key or "").strip()
         if not key:
             return
+
+        # 获取可用模型列表
+        available_models = self._engine.get_model_ids()
+        target_models = model_ids if model_ids else available_models
+
         with self._lock:
+            # 移除主状态
             self._states.pop(key, None)
+
+            # 移除多模型状态
+            for model_id in target_models:
+                state_key = f"{key}:{model_id}"
+                self._states.pop(state_key, None)
+
         self._engine.reset_stream_tracking(key)
 
     def cleanup(self):
@@ -107,6 +258,14 @@ class UnifiedInferenceScheduler:
         if self._worker_thread is not None and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=5.0)
         self._engine.cleanup()
+
+    def get_engine(self) -> InferenceEngine:
+        """获取推理引擎实例"""
+        return self._engine
+
+    def get_model_ids(self) -> List[str]:
+        """获取所有可用模型的 ID 列表"""
+        return self._engine.get_model_ids()
 
     def _new_stream_state(self) -> Dict[str, Any]:
         return {

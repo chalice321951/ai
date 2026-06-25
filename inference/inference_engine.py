@@ -2,8 +2,8 @@
 """
 Inference engine based on Ultralytics YOLO.
 
-All streams share the same loaded model instances. Tracking is handled outside
-the engine so batch inference can stay fully shared across streams.
+All streams share the same loaded model instances. Each model can optionally
+use independent ByteTrack tracking via model.track().
 """
 import logging
 import os
@@ -24,6 +24,11 @@ class InferenceEngine:
         self._torch = None
         self._yolo_class = None
         self._trace_enabled = bool(getattr(self.config, 'crash_trace_enabled', False))
+
+        # Tracking 配置
+        self._tracking_enabled = bool(getattr(self.config, 'tracking_enabled', False))
+        self._tracker_config = str(getattr(self.config, 'tracking_tracker', 'bytetrack.yaml') or 'bytetrack.yaml')
+        self._tracking_persist = bool(getattr(self.config, 'tracking_persist', True))
 
         self._single_thread_worker_enabled = bool(getattr(self.config, 'inference_single_thread_worker', False))
         self._submit_timeout = float(getattr(self.config, 'inference_submit_timeout', 30.0) or 30.0)
@@ -144,15 +149,30 @@ class InferenceEngine:
             model_cfg = self._model_configs.get(model_id, {})
             conf = float(model_cfg.get('conf_threshold', getattr(self.config, 'default_conf_threshold', 0.5)))
             device = model_cfg.get('device', 'cpu')
+
+            # 根据 tracking_enabled 选择推理模式
+            use_tracking = self._tracking_enabled
+            infer_mode = 'track' if use_tracking else 'predict'
+
             try:
-                self._trace_infer_stage(stream_key, model_id, 'call_enter', mode='predict', device=device)
-                res = model.predict(frame, conf=conf, device=device, verbose=False)
-                self._trace_infer_stage(stream_key, model_id, 'call_return', mode='predict')
+                self._trace_infer_stage(stream_key, model_id, 'call_enter', mode=infer_mode, device=device)
+                if use_tracking:
+                    res = model.track(
+                        frame,
+                        conf=conf,
+                        device=device,
+                        persist=self._tracking_persist,
+                        tracker=self._tracker_config,
+                        verbose=False
+                    )
+                else:
+                    res = model.predict(frame, conf=conf, device=device, verbose=False)
+                self._trace_infer_stage(stream_key, model_id, 'call_return', mode=infer_mode)
                 if self._torch is not None and str(device).lower().startswith('cuda'):
-                    self._trace_infer_stage(stream_key, model_id, 'cuda_sync_start', mode='predict')
+                    self._trace_infer_stage(stream_key, model_id, 'cuda_sync_start', mode=infer_mode)
                     self._torch.cuda.synchronize()
-                    self._trace_infer_stage(stream_key, model_id, 'cuda_sync_end', mode='predict')
-                self._trace_infer_stage(stream_key, model_id, 'end', mode='predict')
+                    self._trace_infer_stage(stream_key, model_id, 'cuda_sync_end', mode=infer_mode)
+                self._trace_infer_stage(stream_key, model_id, 'end', mode=infer_mode)
                 results[model_id] = res
             except TypeError:
                 try:
@@ -198,17 +218,31 @@ class InferenceEngine:
             for stream_key in stream_keys:
                 outputs[stream_key] = {}
 
+            # 根据 tracking_enabled 选择推理模式
+            use_tracking = self._tracking_enabled
+            infer_mode = 'track' if use_tracking else 'predict'
+
             for model_id in model_ids:
                 model = model_store.get(model_id)
                 model_cfg = self._model_configs.get(model_id, {})
                 conf = float(model_cfg.get('conf_threshold', getattr(self.config, 'default_conf_threshold', 0.5)))
                 device = model_cfg.get('device', 'cpu')
                 try:
-                    self._trace_infer_stage('batch', model_id, 'batch_call_enter', size=len(frames), device=device)
-                    res_batch = model.predict(frames, conf=conf, device=device, verbose=False)
+                    self._trace_infer_stage('batch', model_id, 'batch_call_enter', size=len(frames), device=device, mode=infer_mode)
+                    if use_tracking:
+                        res_batch = model.track(
+                            frames,
+                            conf=conf,
+                            device=device,
+                            persist=self._tracking_persist,
+                            tracker=self._tracker_config,
+                            verbose=False
+                        )
+                    else:
+                        res_batch = model.predict(frames, conf=conf, device=device, verbose=False)
                     if self._torch is not None and str(device).lower().startswith('cuda'):
                         self._torch.cuda.synchronize()
-                    self._trace_infer_stage('batch', model_id, 'batch_call_return', size=len(frames))
+                    self._trace_infer_stage('batch', model_id, 'batch_call_return', size=len(frames), mode=infer_mode)
                 except TypeError:
                     try:
                         res_batch = model(frames, conf=conf, verbose=False)
@@ -297,6 +331,30 @@ class InferenceEngine:
             logging.error(f"串行推理 worker 返回失败: {response.get('error')}")
             return {}
         return response.get('result', {}) or {}
+
+    def infer_all_models(self, frame, stream_key: str = None, model_ids: List[str] = None) -> Dict[str, Any]:
+        """
+        对所有（或指定）模型进行推理，返回合并结果。
+
+        Args:
+            frame: 输入帧
+            stream_key: 流标识
+            model_ids: 指定的模型 ID 列表，None 表示所有模型
+
+        Returns:
+            Dict[model_id, results]: 合并的推理结果
+        """
+        if not self._models:
+            return {}
+
+        target_models = model_ids or list(self._models.keys())
+        results = {}
+
+        for model_id in target_models:
+            model_result = self.infer(frame, algo_id=model_id, stream_key=stream_key)
+            results.update(model_result)
+
+        return results
 
     def reset_stream_tracking(self, stream_key: str):
         return

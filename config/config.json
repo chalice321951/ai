@@ -22,6 +22,12 @@
       "detection": {
         "3001": "/home/lenovo/models/大型机械-v2-6cf7c7b0.pt"
       }
+    },
+    "model_class_filters": {
+      "3001": ["guanche"]
+    },
+    "model_intervals": {
+      "3001": 3
     }
   },
   "streams": [
@@ -187,7 +193,40 @@
     "video_buffer_seconds": 12,
     "video_pre_alert_seconds": 5,
     "video_post_alert_seconds": 5,
-    "save_raw_image": true
+    "save_raw_image": true,
+    "use_spatial_level": true,
+    "fixed_alarm_level": 1
+  },
+  "ppe": {
+    "enabled": false,
+    "detection": {
+      "model_id": "3099",
+      "person_class_names": ["person"],
+      "person_conf_threshold": 0.5,
+      "box_expand_ratio": 0.15
+    },
+    "attribute": {
+      "model_path": "/home/lenovo/models/ppe_attr_mobilenetv3.pt",
+      "image_size": 160,
+      "inference_interval": 3,
+      "helmet_pos_threshold": 0.6,
+      "helmet_neg_threshold": 0.3,
+      "vest_pos_threshold": 0.6,
+      "vest_neg_threshold": 0.3
+    },
+    "rendering": {
+      "compliant_color": [0, 255, 0],
+      "violation_color": [0, 0, 255],
+      "unknown_color": [128, 128, 128],
+      "font_scale": 0.6,
+      "line_thickness": 2
+    },
+    "alarm": {
+      "track_dedup_seconds": 60,
+      "helmet_violation_type": "ppe_helmet",
+      "vest_violation_type": "ppe_vest",
+      "multi_violation_type": "ppe_multi"
+    }
   },
   "application": {
     "output_directory": "./res",
