@@ -640,7 +640,10 @@ class AlertSystem:
                     if ppe_track_ids_key in detection_dict:
                         # PPE 规则：使用该违规类型的精确 track_ids
                         rule_track_ids = detection_dict[ppe_track_ids_key]
-                        algo_id = 'ppe'
+                        # algo_id 从 detection_dict 读取实际的 PPE model_id（如 "3099"）
+                        # 与 camera.py 生成的 overlay 中的 algo_id 保持一致
+                        algo_id = str(detection_dict.get('ppe_algo_id', '') or
+                                      target_info.get('algo_id', '') or '')
                         class_name = rule_id.replace('_violation', '')  # ppe_helmet / ppe_vest / ppe_multi
                     else:
                         # 普通规则：使用 target_info 中的 track_ids

@@ -173,7 +173,11 @@ class PPEDetector:
 
         start_time = time.time()
 
-        if self._person_model is None:
+        # 捕获到局部变量，防止 cleanup 中途把 self._person_model / self._attr_model 置为 None
+        # 导致 PPEWorker 线程在使用过程中抛 AttributeError。
+        person_model = self._person_model
+        attr_model = self._attr_model
+        if person_model is None:
             return PPEResult(inference_time_ms=0, frame_id=frame_count)
 
         # 第一阶段：人体检测 + ByteTrack（每个流独立 tracker 状态）
@@ -181,7 +185,7 @@ class PPEDetector:
         self._restore_tracker_state(stream_key)
 
         # 2. 使用 model.track() 进行追踪
-        person_results = self._person_model.track(
+        person_results = person_model.track(
             frame,
             conf=self._person_conf_threshold,
             persist=True,
@@ -307,9 +311,10 @@ class PPEDetector:
             # 不缓存，每次都做属性分类
             x1, y1, x2, y2 = crop_box
             crop = frame[y1:y2, x1:x2]
-            if self._attr_model is not None and crop.size > 0:
+            attr_model = self._attr_model  # 局部变量防 cleanup 竞争
+            if attr_model is not None and crop.size > 0:
                 return classify_attributes(
-                    self._attr_model, crop, self._device, self._image_size
+                    attr_model, crop, self._device, self._image_size
                 )
             return 0.5, 0.5
 
@@ -330,9 +335,11 @@ class PPEDetector:
         x1, y1, x2, y2 = crop_box
         crop = frame[y1:y2, x1:x2]
 
-        if self._attr_model is not None and crop.size > 0:
+        # 捕获到局部变量，防止 cleanup 中途置空导致 AttributeError
+        attr_model = self._attr_model
+        if attr_model is not None and crop.size > 0:
             helmet_prob, vest_prob = classify_attributes(
-                self._attr_model, crop, self._device, self._image_size
+                attr_model, crop, self._device, self._image_size
             )
         else:
             helmet_prob, vest_prob = 0.5, 0.5
@@ -354,13 +361,18 @@ class PPEDetector:
         if stream_key not in self._attr_cache:
             return
 
-        stream_cache = self._attr_cache[stream_key]
+        stream_cache = self._attr_cache.get(stream_key)
+        if stream_cache is None:
+            return
+
+        # 用 list() 拷贝快照后再迭代，避免迭代过程中 remove_stream 等并发操作
+        # 修改 dict 大小导致 "dictionary changed size during iteration" 错误。
         expired_keys = [
-            k for k, v in stream_cache.items()
+            k for k, v in list(stream_cache.items())
             if frame_count - v[2] > max_age
         ]
         for k in expired_keys:
-            del stream_cache[k]
+            stream_cache.pop(k, None)
 
     def get_violation_overlays(
         self,

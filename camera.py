@@ -1547,7 +1547,14 @@ class StreamProcessor:
                     and result_age <= max_result_age
                     and frame_lag <= max_frame_lag
                 ):
-                    alert_payload = self._process_infer_results(latest_result.get('results', {}) or {}, result_fid)
+                    # 把 per_algo_frame_ids 传入 _process_infer_results
+                    # 以便 PPE overlay 按其自己的 frame_id 找参考帧（避免画面错位）
+                    per_algo_fids = latest_result.get('per_algo_frame_ids', {}) or {}
+                    alert_payload = self._process_infer_results(
+                        latest_result.get('results', {}) or {},
+                        result_fid,
+                        per_algo_frame_ids=per_algo_fids,
+                    )
                     if alert_payload:
                         alert_detection_dict = dict(alert_payload.get('detection_dict', {}) or {})
                         alert_target_info = dict(alert_payload.get('target_info', {}) or {})
@@ -1599,16 +1606,28 @@ class StreamProcessor:
         except Exception as e:
             logging.error(f"[{self.name}] 帧处理异常: {e}")
 
-    def _process_infer_results(self, results, fid):
-        """处理推理结果，更新检测覆盖层"""
+    def _process_infer_results(self, results, fid, per_algo_frame_ids=None):
+        """处理推理结果，更新检测覆盖层。
+
+        Args:
+            results: Dict[algo_id, YOLO_results | PPEResult]
+            fid: 当前帧 ID（用于按机械检测的 frame_id 找参考帧）
+            per_algo_frame_ids: Dict[algo_id, frame_id]，每个算法各自的 frame_id。
+                PPE 推理慢时，其 frame_id 可能小于 fid，渲染时应按 PPE 自己的 frame_id
+                找参考帧，避免把 5 帧前的 PPE 检测框画到当前帧上。
+        """
+        per_algo_frame_ids = per_algo_frame_ids or {}
         raw_detections = []
         ppe_result = None
+        ppe_frame_id = fid  # 默认 PPE 与当前帧对齐
         total = 0
         class_names = set()
         for aid, res in results.items():
             # PPE 结果单独处理（用类型判断，不依赖字符串匹配）
             if isinstance(res, PPEResult):
                 ppe_result = res
+                # 记录 PPE 自己的 frame_id，渲染时按其找参考帧
+                ppe_frame_id = int(per_algo_frame_ids.get(aid, fid) or fid)
                 continue
             model_detections = self._extract_raw_detections(res, aid, fid=fid)
             # 2026-06-16 16:49 修改目的：过滤后再计数，避免被过滤类别继续触发告警。
@@ -1627,10 +1646,11 @@ class StreamProcessor:
             for overlay in overlays:
                 tid = overlay.get('track_id')
                 if tid not in (None, ''):
+                    # 统一转为 int，转换失败则跳过（避免 alert_system 用字符串做组合键不一致）
                     try:
                         track_ids.add(int(tid))
-                    except Exception:
-                        track_ids.add(tid)
+                    except (ValueError, TypeError):
+                        continue
         else:
             overlays = self._build_overlays_from_detections(raw_detections)
 
@@ -1641,10 +1661,21 @@ class StreamProcessor:
             violation_color = ppe_config.get('rendering', {}).get('violation_color', [0, 0, 255])
             # algo_id 用 PPE 的 model_id（如 "3099"），与其他模型保持一致
             ppe_model_id = ppe_config.get('detection', {}).get('model_id', '3099')
-            ppe_overlays = ppe_result.get_violation_overlays(
-                algo_id=ppe_model_id, color=tuple(violation_color)
-            )
-            overlays.extend(ppe_overlays)
+
+            # PPE 帧错位保护：如果 PPE 的 frame_id 与当前 fid 相差过大，
+            # 说明 PPE 检测框对应的是过期画面，画到当前帧会错位 → 丢弃
+            ppe_frame_age = abs(fid - ppe_frame_id)
+            max_ppe_frame_lag = max(1, int(getattr(self.config, 'max_infer_frame_lag', 5) or 5))
+            if ppe_frame_age > max_ppe_frame_lag:
+                logging.debug(
+                    f"[{self.name}] 丢弃过期 PPE 结果: ppe_fid={ppe_frame_id}, fid={fid}, "
+                    f"age={ppe_frame_age} > max={max_ppe_frame_lag}"
+                )
+            else:
+                ppe_overlays = ppe_result.get_violation_overlays(
+                    algo_id=ppe_model_id, color=tuple(violation_color)
+                )
+                overlays.extend(ppe_overlays)
             # PPE track_ids 也加入
             for overlay in ppe_overlays:
                 tid = overlay.get('track_id')
@@ -1737,6 +1768,8 @@ class StreamProcessor:
             detection_dict['ppe_multi_violation_track_ids'] = [
                 o.get('track_id') for o in multi_overlays if o.get('track_id') is not None
             ]
+            # PPE 实际的 algo_id（=model_id，如 "3099"），供 alert_system 构造去重键
+            detection_dict['ppe_algo_id'] = ppe_overlays[0].get('algo_id', '')
 
         return {
             'frame': confirmed_frame,

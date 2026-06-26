@@ -58,6 +58,9 @@ class PPEWorker:
         # 推理间隔（由构造函数参数传入，不再从 config.model_intervals 自己读）
         self._inference_interval = max(1, int(inference_interval))
 
+        # 缓存首次 start 传入的 stream_keys，健康检查重启时复用
+        self._cached_stream_keys: Optional[list] = None
+
         # 线程控制
         import threading
         self._stop_event = threading.Event()
@@ -112,7 +115,7 @@ class PPEWorker:
         avg_time = self._total_inference_time_ms / max(1, self._total_inferences)
         return {
             "algo_id": self.algo_id,
-            "type": "ppe",
+            "type": "ppe_detector",
             "total_frames": self._total_frames,
             "total_inferences": self._total_inferences,
             "avg_inference_time_ms": round(avg_time, 2),

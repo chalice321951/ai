@@ -73,6 +73,9 @@ class AlgoWorker:
         self._inference_interval = 1  # 每 N 帧推理一次
         self._stream_frame_counters: Dict[str, int] = {}
 
+        # 缓存首次 start 传入的 stream_keys，健康检查重启时复用
+        self._cached_stream_keys: Optional[list] = None
+
         # 线程控制
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None

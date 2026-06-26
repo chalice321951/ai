@@ -17,6 +17,18 @@ from .inference_engine import InferenceEngine
 from pipeline import MultiModelPipeline, AlgorithmResult
 
 
+def _safe_int_interval(value, default: int = 1) -> int:
+    """安全地将 model_intervals 的值转为 int，无效值返回默认值。"""
+    try:
+        result = int(value)
+        return max(1, result)
+    except (ValueError, TypeError):
+        logging.warning(
+            f"[ParallelScheduler] model_intervals 值无效: {value!r}，使用默认值 {default}"
+        )
+        return default
+
+
 class ParallelInferenceScheduler:
     """
     并行多模型推理调度器。
@@ -93,8 +105,8 @@ class ParallelInferenceScheduler:
             conf_threshold = model_cfg.get('conf_threshold', 0.5)
             device = model_cfg.get('device', 'cpu')
 
-            # 获取推理间隔
-            inference_interval = int(model_intervals.get(algo_id, 1))
+            # 获取推理间隔（安全转换，无效值不会让整个 pipeline 崩溃）
+            inference_interval = _safe_int_interval(model_intervals.get(algo_id, 1))
 
             # 添加模型到管线
             self._pipeline.add_model(
@@ -148,7 +160,7 @@ class ParallelInferenceScheduler:
 
         # 读取该 model_id 对应的推理间隔（如 model_intervals["3099"]=5）
         model_intervals = getattr(self.config, 'model_intervals', {}) or {}
-        ppe_interval = int(model_intervals.get(ppe_model_id, 1))
+        ppe_interval = _safe_int_interval(model_intervals.get(ppe_model_id, 1))
 
         # 创建 PPE 检测器（复用共享模型，algo_id 用 model_id）
         ppe_detector = PPEDetector(

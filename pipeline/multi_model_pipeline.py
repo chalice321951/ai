@@ -135,7 +135,7 @@ class MultiModelPipeline:
 
         self._workers[algo_id] = worker
         self._model_configs[algo_id] = {
-            'type': 'ppe',
+            'type': 'ppe_detector',
             'inference_interval': inference_interval,
         }
 
