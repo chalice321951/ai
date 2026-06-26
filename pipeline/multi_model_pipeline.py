@@ -106,13 +106,15 @@ class MultiModelPipeline:
         self,
         algo_id: str,
         ppe_detector: Any,
+        inference_interval: int = 1,
     ) -> bool:
         """
         添加 PPE 检测器到管线。
 
         Args:
-            algo_id: 算法 ID（通常为 "ppe"）
+            algo_id: 算法 ID（建议使用 model_id 如 "3099"）
             ppe_detector: PPEDetector 实例
+            inference_interval: 推理间隔（每 N 帧推理一次）
 
         Returns:
             是否添加成功
@@ -121,21 +123,23 @@ class MultiModelPipeline:
             logging.warning(f"[MultiModelPipeline] 模型 {algo_id} 已存在")
             return False
 
-        # 创建 PPE Worker
+        # 创建 PPE Worker，传入 inference_interval
         worker = PPEWorker(
             algo_id=algo_id,
             ppe_detector=ppe_detector,
             frame_hub=self._frame_hub,
             result_store=self._result_store,
             config=self.config,
+            inference_interval=inference_interval,
         )
 
         self._workers[algo_id] = worker
         self._model_configs[algo_id] = {
             'type': 'ppe',
+            'inference_interval': inference_interval,
         }
 
-        logging.info(f"[MultiModelPipeline] 添加 PPE 模型 {algo_id}")
+        logging.info(f"[MultiModelPipeline] 添加 PPE 模型 {algo_id}, interval={inference_interval}")
 
         # 如果管线已启动，自动启动新 Worker
         if self._started:
@@ -332,13 +336,20 @@ class MultiModelPipeline:
 
     def remove_stream(self, stream_key: str) -> None:
         """
-        移除流的所有数据。
+        移除流的所有数据，包括各 Worker 内部的缓存。
 
         Args:
             stream_key: 流标识
         """
         self._frame_hub.remove_stream(stream_key)
         self._result_store.remove_stream(stream_key)
+        # 同步清理各 Worker 的 stream 级缓存（tracker、计数器、属性缓存）
+        for worker in self._workers.values():
+            if hasattr(worker, 'remove_stream'):
+                try:
+                    worker.remove_stream(stream_key)
+                except Exception as e:
+                    logging.debug(f"[MultiModelPipeline] Worker remove_stream 异常: {e}")
 
     def cleanup(self) -> None:
         """清理所有资源。"""

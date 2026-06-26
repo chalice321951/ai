@@ -69,12 +69,12 @@ class PersonPPEResult:
             return "ppe_vest"
         return None
 
-    def to_overlay(self, algo_id: str = "ppe", color: Tuple[int, int, int] = (0, 0, 255)) -> dict:
+    def to_overlay(self, algo_id: str, color: Tuple[int, int, int] = (0, 0, 255)) -> dict:
         """
         转换为 overlay 字典格式（用于告警和渲染）。
 
         Args:
-            algo_id: 算法 ID
+            algo_id: 算法 ID（应使用 model_id 如 "3099"）
             color: 颜色（BGR）
 
         Returns:
@@ -84,9 +84,20 @@ class PersonPPEResult:
         if violation_type is None:
             return {}
 
-        # 构造标注文本：违规类型 + 置信度 + ID + H/V 状态
+        # confidence 用违规属性的概率（语义正确）：
+        # ppe_helmet -> 1 - helmet_prob（越接近 1 越确信没戴）
+        # ppe_vest   -> 1 - vest_prob
+        # ppe_multi  -> 两者平均
+        if violation_type == "ppe_helmet":
+            violation_confidence = 1.0 - self.helmet_prob
+        elif violation_type == "ppe_vest":
+            violation_confidence = 1.0 - self.vest_prob
+        else:  # ppe_multi
+            violation_confidence = ((1.0 - self.helmet_prob) + (1.0 - self.vest_prob)) / 2.0
+
+        # 构造标注文本：违规类型 + 违规置信度 + ID + H/V 状态
         text = (
-            f"{violation_type} {self.person_conf:.2f} ID:{self.track_id} "
+            f"{violation_type} {violation_confidence:.2f} ID:{self.track_id} "
             f"H:{self.helmet_state}({self.helmet_prob:.2f}) "
             f"V:{self.vest_state}({self.vest_prob:.2f})"
         )
@@ -94,7 +105,8 @@ class PersonPPEResult:
         return {
             "xyxy": self.det_box,
             "text": text,
-            "confidence": self.person_conf,
+            "confidence": violation_confidence,  # 违规置信度（非人体检测置信度）
+            "person_conf": self.person_conf,     # 保留人体检测置信度供需要时使用
             "class_name": violation_type,
             "track_id": self.track_id,
             "algo_id": algo_id,
@@ -155,7 +167,7 @@ class PPEResult:
         """多重违规人数"""
         return sum(1 for p in self.persons if p.is_multi_violation())
 
-    def get_violation_overlays(self, algo_id: str = "ppe", color: Tuple[int, int, int] = (0, 0, 255)) -> List[dict]:
+    def get_violation_overlays(self, algo_id: str, color: Tuple[int, int, int] = (0, 0, 255)) -> List[dict]:
         """
         获取所有违规人体的 overlay 列表。
 

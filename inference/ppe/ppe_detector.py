@@ -38,7 +38,8 @@ class PPEDetector:
     4. 每个 PPEDetector 实例独立，不与其他模型共享 tracker
     """
 
-    def __init__(self, config: dict, model_path: str = '', device: str = 'cpu', shared_model: Any = None):
+    def __init__(self, config: dict, model_path: str = '', device: str = 'cpu',
+                 shared_model: Any = None, algo_id: str = None):
         """
         初始化 PPE 检测器。
 
@@ -47,9 +48,14 @@ class PPEDetector:
             model_path: 人体检测模型路径（当 shared_model 为 None 时使用）
             device: 推理设备
             shared_model: 已加载的共享模型实例（避免重复加载，省显存）
+            algo_id: 算法 ID（建议使用 model_id 如 "3099"）
         """
         self._config = config
         self._device = device
+        # algo_id：统一用 model_id（如 "3099"），不再用 "ppe" 字符串
+        self._algo_id = algo_id or config.get('detection', {}).get('model_id', '3099')
+        # 生命周期标志（cleanup 后置 False，防止 detect 静默失效）
+        self._alive = True
 
         # 检测配置
         self._detection_config = config.get('detection', {})
@@ -131,12 +137,15 @@ class PPEDetector:
         try:
             cached = self._stream_trackers.get(stream_key)
             if cached is None:
-                # 首次访问该流：将 predictor.trackers 设为空列表，
-                # 让 model.track() 为该流创建全新的 tracker 实例。
-                # 不 reset 现有 tracker 对象，避免破坏其他流的缓存。
+                # 首次访问该流：删除 predictor.trackers 属性，
+                # 让 ultralytics 的 on_predict_start 回调重新创建 trackers。
+                # 注意：不能设为 [] —— on_predict_start 检查 hasattr 而非 truthiness。
                 predictor = getattr(self._person_model, 'predictor', None)
-                if predictor is not None:
-                    predictor.trackers = []
+                if predictor is not None and hasattr(predictor, 'trackers'):
+                    try:
+                        delattr(predictor, 'trackers')
+                    except AttributeError:
+                        pass
                 return
             predictor = getattr(self._person_model, 'predictor', None)
             if predictor is not None:
@@ -159,6 +168,9 @@ class PPEDetector:
         Returns:
             PPEResult 检测结果
         """
+        if not self._alive:
+            raise RuntimeError("PPEDetector 已 cleanup，不能再使用")
+
         start_time = time.time()
 
         if self._person_model is None:
@@ -289,6 +301,18 @@ class PPEDetector:
         Returns:
             (helmet_prob, vest_prob)
         """
+        # track_id < 0 表示未被跟踪（ByteTrack 还没确认），跳过缓存：
+        # 多个未跟踪的人会共用 track_id=-1，缓存会互相串扰。
+        if track_id is None or (isinstance(track_id, int) and track_id < 0):
+            # 不缓存，每次都做属性分类
+            x1, y1, x2, y2 = crop_box
+            crop = frame[y1:y2, x1:x2]
+            if self._attr_model is not None and crop.size > 0:
+                return classify_attributes(
+                    self._attr_model, crop, self._device, self._image_size
+                )
+            return 0.5, 0.5
+
         # 初始化流缓存
         if stream_key not in self._attr_cache:
             self._attr_cache[stream_key] = {}
@@ -341,25 +365,34 @@ class PPEDetector:
     def get_violation_overlays(
         self,
         ppe_result: PPEResult,
-        algo_id: str = "ppe",
+        algo_id: str = None,
     ) -> List[dict]:
         """
         获取违规人体的 overlay 列表。
 
         Args:
             ppe_result: PPE 检测结果
-            algo_id: 算法 ID
+            algo_id: 算法 ID（默认使用 self._algo_id，即 model_id）
 
         Returns:
             overlay 字典列表
         """
         violation_color = tuple(self._rendering_config.get('violation_color', [0, 0, 255]))
-        return ppe_result.get_violation_overlays(algo_id=algo_id, color=violation_color)
+        return ppe_result.get_violation_overlays(
+            algo_id=algo_id or self._algo_id,
+            color=violation_color,
+        )
 
     def cleanup(self) -> None:
         """清理资源。共享模型不置空，由 InferenceEngine 统一管理。"""
+        self._alive = False
         self._attr_cache.clear()
         self._stream_trackers.clear()
         # 只清理 PPE 专用的属性分类模型，共享的 person_model 不置空
         self._attr_model = None
         logging.info("[PPEDetector] 已清理（缓存、tracker、属性模型）")
+
+    def remove_stream(self, stream_key: str) -> None:
+        """移除指定流的所有缓存状态。"""
+        self._attr_cache.pop(stream_key, None)
+        self._stream_trackers.pop(stream_key, None)

@@ -94,6 +94,7 @@ from stream.enhanced_video_processor import (
 )
 from stream.capture_process import CaptureProxy
 from inference.parallel_scheduler import ParallelInferenceScheduler
+from inference.ppe import PPEResult
 from alert.alert_system import AlertSystem, create_count_threshold_rule, AlertLevel
 from tracking.simple_tracker import SimpleTracker
 from utils.alarm_level import classify_point_alarm_level_uv_details
@@ -1605,8 +1606,8 @@ class StreamProcessor:
         total = 0
         class_names = set()
         for aid, res in results.items():
-            # PPE 结果单独处理
-            if aid == 'ppe':
+            # PPE 结果单独处理（用类型判断，不依赖字符串匹配）
+            if isinstance(res, PPEResult):
                 ppe_result = res
                 continue
             model_detections = self._extract_raw_detections(res, aid, fid=fid)
@@ -1638,7 +1639,11 @@ class StreamProcessor:
         if ppe_result is not None:
             ppe_config = getattr(self.config, 'ppe_config', {})
             violation_color = ppe_config.get('rendering', {}).get('violation_color', [0, 0, 255])
-            ppe_overlays = ppe_result.get_violation_overlays(algo_id="ppe", color=tuple(violation_color))
+            # algo_id 用 PPE 的 model_id（如 "3099"），与其他模型保持一致
+            ppe_model_id = ppe_config.get('detection', {}).get('model_id', '3099')
+            ppe_overlays = ppe_result.get_violation_overlays(
+                algo_id=ppe_model_id, color=tuple(violation_color)
+            )
             overlays.extend(ppe_overlays)
             # PPE track_ids 也加入
             for overlay in ppe_overlays:

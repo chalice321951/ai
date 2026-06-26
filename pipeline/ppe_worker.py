@@ -32,16 +32,19 @@ class PPEWorker:
         frame_hub: FrameHub,
         result_store: ResultStore,
         config: Any = None,
+        inference_interval: int = 1,
     ):
         """
         初始化 PPE Worker。
 
         Args:
-            algo_id: 算法 ID（通常为 "ppe"）
+            algo_id: 算法 ID（建议使用 model_id 如 "3099"）
             ppe_detector: PPEDetector 实例
             frame_hub: FrameHub 实例
             result_store: ResultStore 实例
             config: 配置对象
+            inference_interval: 推理间隔（每 N 帧推理一次），
+                由 parallel_scheduler 从 model_intervals[model_id] 读取后传入。
         """
         self.algo_id = algo_id
         self.ppe_detector = ppe_detector
@@ -52,11 +55,8 @@ class PPEWorker:
         # 每个流的帧计数
         self._stream_frame_counts = {}
 
-        # 推理间隔控制（与 AlgoWorker 对齐）
-        self._inference_interval = 1
-        if config is not None:
-            model_intervals = getattr(config, 'model_intervals', {}) or {}
-            self._inference_interval = max(1, int(model_intervals.get('ppe', 1)))
+        # 推理间隔（由构造函数参数传入，不再从 config.model_intervals 自己读）
+        self._inference_interval = max(1, int(inference_interval))
 
         # 线程控制
         import threading
@@ -76,12 +76,17 @@ class PPEWorker:
             logging.warning(f"[PPEWorker-{self.algo_id}] Worker 已在运行")
             return
 
+        # 缓存第一次指定的 stream_keys，健康检查重启时复用
+        if stream_keys is not None:
+            self._cached_stream_keys = list(stream_keys)
+        actual_stream_keys = getattr(self, '_cached_stream_keys', None) or stream_keys
+
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._worker_loop,
             daemon=True,
             name=f"PPEWorker-{self.algo_id}",
-            kwargs={"stream_keys": stream_keys},
+            kwargs={"stream_keys": actual_stream_keys},
         )
         self._thread.start()
         logging.info(f"[PPEWorker-{self.algo_id}] Worker 已启动")
@@ -187,3 +192,9 @@ class PPEWorker:
         self.stop()
         if self.ppe_detector is not None:
             self.ppe_detector.cleanup()
+
+    def remove_stream(self, stream_key: str) -> None:
+        """移除指定流的所有缓存状态。"""
+        self._stream_frame_counts.pop(stream_key, None)
+        if self.ppe_detector is not None:
+            self.ppe_detector.remove_stream(stream_key)

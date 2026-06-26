@@ -651,8 +651,13 @@ class AlertSystem:
                     for tid in list(rule_track_ids or []):
                         if tid in (None, ''):
                             continue
+                        # track_id < 0 表示未被跟踪，跳过组合键去重
+                        # （多个未跟踪目标共用 -1，会互相抑制告警）
                         try:
-                            track_key = (int(tid), algo_id, class_name)
+                            tid_int = int(tid)
+                            if tid_int < 0:
+                                continue
+                            track_key = (tid_int, algo_id, class_name)
                         except Exception:
                             track_key = (tid, algo_id, class_name)
                         current_track_keys.add(track_key)

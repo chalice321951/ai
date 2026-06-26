@@ -109,12 +109,16 @@ class AlgoWorker:
         try:
             cached = self._stream_trackers.get(stream_key)
             if cached is None:
-                # 首次访问该流：将 predictor.trackers 设为空列表，
-                # 让 model.track() 为该流创建全新的 tracker 实例。
-                # 不 reset 现有 tracker 对象，避免破坏其他流的缓存。
+                # 首次访问该流：删除 predictor.trackers 属性，
+                # 让 ultralytics 的 on_predict_start 回调重新创建 trackers。
+                # 注意：不能设为 [] —— on_predict_start 检查 hasattr 而非 truthiness，
+                # 设为空列表会让回调误以为已初始化，跳过创建导致后续 IndexError。
                 predictor = getattr(self.model, 'predictor', None)
-                if predictor is not None:
-                    predictor.trackers = []
+                if predictor is not None and hasattr(predictor, 'trackers'):
+                    try:
+                        delattr(predictor, 'trackers')
+                    except AttributeError:
+                        pass
                 return
             predictor = getattr(self.model, 'predictor', None)
             if predictor is not None:
@@ -127,12 +131,17 @@ class AlgoWorker:
             logging.warning(f"[AlgoWorker-{self.algo_id}] Worker 已在运行")
             return
 
+        # 缓存第一次指定的 stream_keys，健康检查重启时复用，避免行为漂移
+        if stream_keys is not None:
+            self._cached_stream_keys = list(stream_keys)
+        actual_stream_keys = getattr(self, '_cached_stream_keys', None) or stream_keys
+
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._worker_loop,
             daemon=True,
             name=f"AlgoWorker-{self.algo_id}",
-            kwargs={"stream_keys": stream_keys},
+            kwargs={"stream_keys": actual_stream_keys},
         )
         self._thread.start()
         logging.info(f"[AlgoWorker-{self.algo_id}] Worker 已启动")
@@ -268,3 +277,8 @@ class AlgoWorker:
         self.stop()
         self._stream_trackers.clear()
         self._stream_frame_counters.clear()
+
+    def remove_stream(self, stream_key: str) -> None:
+        """移除指定流的所有缓存状态（tracker、计数器）。"""
+        self._stream_trackers.pop(stream_key, None)
+        self._stream_frame_counters.pop(stream_key, None)

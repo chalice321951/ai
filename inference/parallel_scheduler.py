@@ -146,24 +146,34 @@ class ParallelInferenceScheduler:
                 self._pipeline.remove_model(ppe_model_id)
                 logging.info(f"[ParallelScheduler] 从管线移除 AlgoWorker[{ppe_model_id}]，由 PPEDetector 接管")
 
-        # 创建 PPE 检测器（复用共享模型）
+        # 读取该 model_id 对应的推理间隔（如 model_intervals["3099"]=5）
+        model_intervals = getattr(self.config, 'model_intervals', {}) or {}
+        ppe_interval = int(model_intervals.get(ppe_model_id, 1))
+
+        # 创建 PPE 检测器（复用共享模型，algo_id 用 model_id）
         ppe_detector = PPEDetector(
             config=ppe_config,
             model_path=ppe_model_path,
             device=ppe_model_cfg.get('device', 'cpu'),
             shared_model=shared_model,
+            algo_id=ppe_model_id,
         )
 
         # 将 tracker_config 传入 PPE 配置
         ppe_detector._tracker_config = tracker_config
 
-        # 添加到管线
+        # 添加到管线：algo_id 用 model_id（"3099"），不再用 "ppe"
         self._pipeline.add_ppe_model(
-            algo_id="ppe",
+            algo_id=ppe_model_id,
             ppe_detector=ppe_detector,
+            inference_interval=ppe_interval,
         )
 
-        logging.info(f"[ParallelScheduler] 添加 PPE 检测器, model={ppe_model_path}, shared={shared_model is not None}")
+        logging.info(
+            f"[ParallelScheduler] 添加 PPE 检测器, algo_id={ppe_model_id}, "
+            f"model={ppe_model_path}, interval={ppe_interval}, "
+            f"shared={shared_model is not None}"
+        )
 
     def _health_check_loop(self) -> None:
         """健康检查循环，定期检查 Worker 状态并自动重启异常 Worker。"""
@@ -249,13 +259,15 @@ class ParallelInferenceScheduler:
         if not snapshot:
             return None
 
-        # 合并结果
+        # 合并结果，同时保留每个 algo 自己的 frame_id（修复 M2：避免 PPE 慢推理时画面错位）
         merged_results = {}
+        per_algo_frame_ids = {}
         latest_frame_id = 0
         latest_result_ts = 0.0
 
         for algo_id, result in snapshot.items():
             merged_results[algo_id] = result.results
+            per_algo_frame_ids[algo_id] = result.frame_id
             latest_frame_id = max(latest_frame_id, result.frame_id)
             latest_result_ts = max(latest_result_ts, result.timestamp)
 
@@ -263,6 +275,7 @@ class ParallelInferenceScheduler:
             "frame_id": latest_frame_id,
             "results": merged_results,
             "result_ts": latest_result_ts,
+            "per_algo_frame_ids": per_algo_frame_ids,
         }
 
     def get_latest_result_multi_model(self, stream_key: str, model_ids: List[str] = None) -> Optional[Dict[str, Any]]:
