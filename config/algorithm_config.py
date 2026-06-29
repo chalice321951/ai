@@ -232,10 +232,28 @@ class CameraConfig:
         self.model_intervals = models.get('model_intervals', {})
 
     def _load_class_config(self):
-        classes = self.config.get('classes', {})
-        filtered = classes.get('filtered_classes', {}) if isinstance(classes, dict) else {}
-        # 2026-06-16 16:49 修改目的：类别过滤改为全局类别名配置，不再按算法ID拆分。
-        self.detection_filtered_class_names = filtered.get('detection_filtered_class_names', [])
+        # 类别过滤已统一到 models.model_class_filters，由 get_class_filter(algo_id) 方法提供。
+        # 此方法保留仅为兼容旧代码中直接读取 detection_filtered_class_names 的地方。
+        self.detection_filtered_class_names = self.model_class_filters.get('_global', [])
+
+    def get_class_filter(self, algo_id: str) -> list:
+        """
+        获取指定模型的类别过滤列表。
+
+        查找优先级：model_class_filters[algo_id] → model_class_filters['_global'] → 不过滤
+
+        Args:
+            algo_id: 模型 ID（如 "3001"、"3099"）
+
+        Returns:
+            要过滤掉的类别名列表（返回的类别会被丢弃）
+        """
+        filters = getattr(self, 'model_class_filters', {})
+        if algo_id in filters:
+            return filters[algo_id]
+        if '_global' in filters:
+            return filters['_global']
+        return []
 
     def _load_performance_config(self):
         perf = self.config.get('performance', {})

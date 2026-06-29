@@ -20,14 +20,25 @@
     "default_conf_threshold": 0.8,
     "model_mappings": {
       "detection": {
-        "3001": "/home/lenovo/models/大型机械-v2-6cf7c7b0.pt"
+        "3001": "/home/admin123/wjj/models/大型机械-v2-6cf7c7b0.pt",
+        "3099": "/home/admin123/wjj/models/vis-m-bs16-sz960.pt"
       }
     },
     "model_class_filters": {
-      "3001": ["guanche"]
+      "_global": [],
+      "3001": ["guanche"],
+      "3099": ["bicycle",
+      "car",
+      "van",
+      "truck",
+      "tricycle",
+      "awning-tricycle",
+      "bus",
+      "motor"]
     },
     "model_intervals": {
-      "3001": 3
+      "3001": 3,
+      "3099": 3
     }
   },
   "streams": [
@@ -153,9 +164,9 @@
       "input_url": "rtmp://10.1.129.99:1935/live/camera-1019",
       "output_url": "rtmp://10.1.129.99:1935/ai/camera-1019",
       "enabled": true,
-      "taskId": "交投大厦旁国动塔",
-      "gatewayDeviceSn": "交投大厦旁国动塔",
-      "droneDeviceSn": "交投大厦旁国动塔",
+      "taskId": "jiaotou-1019",
+      "gatewayDeviceSn": "02311A26W9",
+      "droneDeviceSn": "02311A26W9",
       "monitorEq": "交投大厦旁国动塔",
       "area": "交投大厦旁国动塔",
       "rootName": "交投大厦旁国动塔",
@@ -166,22 +177,17 @@
       "input_url": "rtmp://10.1.129.99:1935/live/camera-1021",
       "output_url": "rtmp://10.1.129.99:1935/ai/camera-1021",
       "enabled": true,
-      "taskId": "东湖急救中心",
-      "gatewayDeviceSn": "东湖急救中心",
-      "droneDeviceSn": "东湖急救中心",
+      "taskId": "donghu-1021",
+      "gatewayDeviceSn": "02323A2MLJ",
+      "droneDeviceSn": "02323A2MLJ",
       "monitorEq": "东湖急救中心",
       "area": "东湖急救中心",
       "rootName": "东湖急救中心",
       "alarmAccuratePosition": "115.8810352,28.6905479"
     }
   ],
-  "classes": {
-    "filtered_classes": {
-      "detection_filtered_class_names": ["guanche"]
-    }
-  },
   "performance": {
-    "detection_inference_interval": 3,
+    "detection_inference_interval": 1,
     "result_max_back_frames": 15,
     "max_infer_result_age": 0.5,
     "max_infer_frame_lag": 3
@@ -198,10 +204,10 @@
     "fixed_alarm_level": 1
   },
   "ppe": {
-    "enabled": false,
+    "enabled": true,
     "detection": {
       "model_id": "3099",
-      "person_class_names": ["person"],
+      "person_class_names": ["person", "pedestrian", "people"],
       "person_conf_threshold": 0.5,
       "box_expand_ratio": 0.15
     },

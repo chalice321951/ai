@@ -210,10 +210,9 @@ class StreamProcessor:
         self._last_infer_result_ts = 0.0
         self._last_infer_result_count = 0
         self._last_target_seen_ts = 0.0
-        # 2026-06-16 16:49 修改目的：缓存全局类别名称过滤规则，当前用于过滤 guanche。
-        self._detection_filtered_class_names = self._normalize_filtered_class_names(
-            getattr(self.config, 'detection_filtered_class_names', [])
-        )
+        # 类别过滤缓存：按 algo_id 缓存，避免每帧重复查 config
+        # 由 _get_class_filter_for_model 填充
+        self._class_filter_cache: Dict[str, set] = {}
         self._last_motion_level = 0.0
         self._motion_prev_small: Optional[np.ndarray] = None
         self._capture_watchdog_interval = max(
@@ -1985,10 +1984,28 @@ class StreamProcessor:
                 class_names.add(class_name)
         return class_names
 
-    def _should_keep_detection_class(self, class_name: str) -> bool:
-        if not self._detection_filtered_class_names:
+    def _get_class_filter_for_model(self, algo_id: str) -> set:
+        """
+        获取指定模型的类别过滤集合（小写），带缓存。
+
+        查找优先级：model_class_filters[algo_id] → model_class_filters['_global'] → 不过滤
+        """
+        if algo_id not in self._class_filter_cache:
+            filter_list = self.config.get_class_filter(algo_id)
+            self._class_filter_cache[algo_id] = {
+                str(c).strip().lower() for c in filter_list if str(c).strip()
+            }
+        return self._class_filter_cache[algo_id]
+
+    def _should_keep_detection_class(self, class_name: str, algo_id: str = None) -> bool:
+        """判断检测类别是否应保留。algo_id 不传时走旧逻辑（全局过滤）。"""
+        if algo_id is not None:
+            filter_set = self._get_class_filter_for_model(algo_id)
+        else:
+            filter_set = getattr(self, '_detection_filtered_class_names', set())
+        if not filter_set:
             return True
-        return str(class_name or '').strip().lower() not in self._detection_filtered_class_names
+        return str(class_name or '').strip().lower() not in filter_set
 
     def _extract_raw_detections(self, results, algo_id: str, fid: Optional[int] = None):
         detections = []
@@ -2014,8 +2031,8 @@ class StreamProcessor:
                 conf = float(confs[i])
                 cls_id = int(clss[i])
                 label = names.get(cls_id, str(cls_id)) if isinstance(names, dict) else str(cls_id)
-                # 2026-06-16 16:49 修改目的：按类别名过滤检测框，后续画框、跟踪、告警共用同一结果。
-                if not self._should_keep_detection_class(label):
+                # 按类别名过滤检测框，按模型独立过滤（model_class_filters[algo_id]）
+                if not self._should_keep_detection_class(label, algo_id=algo_id):
                     continue
                 detections.append({
                     'xyxy': (x1, y1, x2, y2),
