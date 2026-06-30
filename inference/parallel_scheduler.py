@@ -162,14 +162,22 @@ class ParallelInferenceScheduler:
         model_intervals = getattr(self.config, 'model_intervals', {}) or {}
         ppe_interval = _safe_int_interval(model_intervals.get(ppe_model_id, 1))
 
+        # 读取 PPE 人体检测的置信度阈值（从全局 model_conf_thresholds 读取）
+        ppe_conf_threshold = self.config.get_conf_threshold(ppe_model_id) if hasattr(self.config, 'get_conf_threshold') else 0.25
+        # 注入到 ppe_config 供 PPEDetector 读取
+        ppe_config_with_conf = dict(ppe_config)
+        ppe_config_with_conf['person_conf_threshold'] = ppe_conf_threshold
+
         # 创建 PPE 检测器（复用共享模型，algo_id 用 model_id）
         ppe_detector = PPEDetector(
-            config=ppe_config,
+            config=ppe_config_with_conf,
             model_path=ppe_model_path,
             device=ppe_model_cfg.get('device', 'cpu'),
             shared_model=shared_model,
             algo_id=ppe_model_id,
         )
+
+        logging.info(f"[ParallelScheduler] PPE 人体检测置信度: {ppe_conf_threshold}")
 
         # 将 tracker_config 传入 PPE 配置
         ppe_detector._tracker_config = tracker_config

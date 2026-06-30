@@ -100,16 +100,19 @@ class InferenceEngine:
                     logging.info(f"加载检测模型 [{model_id}] device={runtime_device}: {model_path}")
                     model = self._create_model_instance(model_path, runtime_device)
                     self._models[model_id] = model
+                    # 读取置信度阈值：优先从 model_conf_thresholds[algo_id] 读取
+                    conf_threshold = self.config.get_conf_threshold(model_id) if hasattr(self.config, 'get_conf_threshold') else float(
+                        model_cfg.get('conf_threshold', getattr(self.config, 'default_conf_threshold', 0.5))
+                    )
                     self._model_configs[model_id] = {
                         'id': model_id,
                         'name': model_cfg.get('name', model_id),
                         'task': model_cfg.get('task', 'detection'),
                         'path': model_path,
-                        'conf_threshold': float(
-                            model_cfg.get('conf_threshold', getattr(self.config, 'default_conf_threshold', 0.5))
-                        ),
+                        'conf_threshold': conf_threshold,
                         'device': runtime_device,
                     }
+                    logging.info(f"模型 [{model_id}] conf_threshold={conf_threshold:.2f}")
                     logging.info(f"模型 [{model_id}] 加载成功")
                 except Exception as e:
                     logging.error(f"模型 [{model_id}] 加载失败: {e}")

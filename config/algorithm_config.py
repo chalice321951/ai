@@ -231,6 +231,11 @@ class CameraConfig:
         # 格式: {"3001": 3, "3099": 5}
         self.model_intervals = models.get('model_intervals', {})
 
+        # 多模型独立配置：每个模型的置信度阈值
+        # 格式: {"3001": 0.75, "3099": 0.25}
+        # 查找优先级：model_conf_thresholds[algo_id] → default_conf_threshold
+        self.model_conf_thresholds = models.get('model_conf_thresholds', {})
+
     def _load_class_config(self):
         # 类别过滤已统一到 models.model_class_filters，由 get_class_filter(algo_id) 方法提供。
         # 此方法保留仅为兼容旧代码中直接读取 detection_filtered_class_names 的地方。
@@ -254,6 +259,23 @@ class CameraConfig:
         if '_global' in filters:
             return filters['_global']
         return []
+
+    def get_conf_threshold(self, algo_id: str) -> float:
+        """
+        获取指定模型的置信度阈值。
+
+        查找优先级：model_conf_thresholds[algo_id] → default_conf_threshold
+
+        Args:
+            algo_id: 模型 ID（如 "3001"、"3099"）
+
+        Returns:
+            置信度阈值
+        """
+        thresholds = getattr(self, 'model_conf_thresholds', {})
+        if algo_id in thresholds:
+            return float(thresholds[algo_id])
+        return float(getattr(self, 'default_conf_threshold', 0.75))
 
     def _load_performance_config(self):
         perf = self.config.get('performance', {})

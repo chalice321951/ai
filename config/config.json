@@ -17,16 +17,16 @@
     "match_iou": 0.5
   },
   "models": {
-    "default_conf_threshold": 0.8,
+    "default_conf_threshold": 0.75,
     "model_mappings": {
       "detection": {
-        "3001": "/home/admin123/wjj/models/大型机械-v2-6cf7c7b0.pt",
-        "3099": "/home/admin123/wjj/models/vis-m-bs16-sz960.pt"
+        "3001": "/home/lenovo/models/大型机械-v2-6cf7c7b0.pt",
+        "3099": "/home/lenovo/models/3002-0518.pt"
       }
     },
     "model_class_filters": {
       "_global": [],
-      "3001": ["guanche"],
+      "3001": ["guanche", "zhatuche"],
       "3099": ["bicycle",
       "car",
       "van",
@@ -39,6 +39,10 @@
     "model_intervals": {
       "3001": 3,
       "3099": 3
+    },
+    "model_conf_thresholds": {
+      "3001": 0.75,
+      "3099": 0.7
     }
   },
   "streams": [
@@ -207,18 +211,18 @@
     "enabled": true,
     "detection": {
       "model_id": "3099",
-      "person_class_names": ["person", "pedestrian", "people"],
-      "person_conf_threshold": 0.5,
-      "box_expand_ratio": 0.15
+      "person_class_names": ["pedestrian", "people", "person"],
+      "box_expand_ratio": 0.05,
+      "top_extra_ratio": 0.05
     },
     "attribute": {
-      "model_path": "/home/lenovo/models/ppe_attr_mobilenetv3.pt",
+      "model_path": "/home/lenovo/models/best_model.pt",
       "image_size": 160,
       "inference_interval": 3,
-      "helmet_pos_threshold": 0.6,
-      "helmet_neg_threshold": 0.3,
-      "vest_pos_threshold": 0.6,
-      "vest_neg_threshold": 0.3
+      "helmet_pos_threshold": 0.65,
+      "helmet_neg_threshold": 0.30,
+      "vest_pos_threshold": 0.90,
+      "vest_neg_threshold": 0.30
     },
     "rendering": {
       "compliant_color": [0, 255, 0],

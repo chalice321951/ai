@@ -57,11 +57,15 @@ class PPEDetector:
         # 生命周期标志（cleanup 后置 False，防止 detect 静默失效）
         self._alive = True
 
-        # 检测配置
+        # 检测配置（对齐参考项目的默认值）
         self._detection_config = config.get('detection', {})
         self._person_class_names = self._detection_config.get('person_class_names', ['person'])
-        self._person_conf_threshold = self._detection_config.get('person_conf_threshold', 0.5)
-        self._box_expand_ratio = self._detection_config.get('box_expand_ratio', 0.15)
+        self._box_expand_ratio = self._detection_config.get('box_expand_ratio', 0.05)
+        self._top_extra_ratio = self._detection_config.get('top_extra_ratio', 0.05)
+
+        # 置信度阈值：由 parallel_scheduler 从 config.get_conf_threshold(algo_id) 读取后传入
+        # 不再从 ppe.detection.person_conf_threshold 读取（已移除该配置项）
+        self._person_conf_threshold = float(config.get('person_conf_threshold', 0.25))
 
         # 属性分类配置
         self._attribute_config = config.get('attribute', {})
@@ -258,7 +262,10 @@ class PPEDetector:
         self, x1: int, y1: int, x2: int, y2: int, frame_shape: tuple
     ) -> Tuple[int, int, int, int]:
         """
-        扩展检测框以包含头部和上身。
+        扩展检测框以包含头部和上身（对齐参考项目 expand_box 逻辑）。
+
+        参考项目有独立的 top_extra_ratio，专门多扩展头顶区域，
+        因为安全帽在头顶，如果扩展不够会裁剪掉。
 
         Args:
             x1, y1, x2, y2: 原始检测框
@@ -273,9 +280,10 @@ class PPEDetector:
 
         expand_h = int(box_h * self._box_expand_ratio)
         expand_w = int(box_w * self._box_expand_ratio)
+        top_extra = int(box_h * self._top_extra_ratio)
 
         new_x1 = max(0, x1 - expand_w)
-        new_y1 = max(0, y1 - expand_h)
+        new_y1 = max(0, y1 - expand_h - top_extra)  # 顶部多扩展 top_extra
         new_x2 = min(w, x2 + expand_w)
         new_y2 = min(h, y2 + expand_h)
 

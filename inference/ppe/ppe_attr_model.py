@@ -4,9 +4,9 @@ PPE 属性分类模型定义。
 
 使用 MobileNet V3 Small 作为骨干网络，进行安全帽和反光衣的属性分类。
 
-模型规格：
+模型规格（对齐参考项目 D:\AI_code\安全帽反光衣属性识别）：
 - 输入: (batch_size, 3, 160, 160) RGB 图像，归一化到 [0, 1]
-- 输出: helmet_logits (batch_size,), vest_logits (batch_size,)
+- 输出: Dict{"helmet_logits": (batch_size,), "vest_logits": (batch_size,)}
 - 后处理: sigmoid(logits) -> [0, 1] 概率
 
 三态判定：
@@ -15,14 +15,14 @@ PPE 属性分类模型定义。
 - 否则 -> "unknown"
 """
 import logging
-from typing import Tuple, Optional
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 
 try:
     import torch
     import torch.nn as nn
-    from torchvision.models import mobilenet_v3_small
+    from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
@@ -35,35 +35,41 @@ if TORCH_AVAILABLE:
         PPE 属性分类模型（MobileNet V3 Small）。
 
         用于判断人体是否佩戴安全帽和反光衣。
+        模型定义对齐参考项目 D:\AI_code\安全帽反光衣属性识别\infer\ppe_attr_model.py。
         """
 
-        def __init__(self, pretrained: bool = False):
+        def __init__(self, pretrained: bool = False, dropout: float = 0.2):
             """
             初始化模型。
 
             Args:
                 pretrained: 是否使用预训练权重
+                dropout: Dropout 概率
             """
             super().__init__()
 
             # 加载 MobileNet V3 Small 骨干网络
-            backbone = mobilenet_v3_small(pretrained=pretrained)
+            weights = MobileNet_V3_Small_Weights.DEFAULT if pretrained else None
+            backbone = mobilenet_v3_small(weights=weights)
             self.features = backbone.features
-
-            # 全局平均池化
             self.pool = nn.AdaptiveAvgPool2d(1)
 
-            # 投影层
-            self.projector = nn.Sequential(
-                nn.Linear(576, 128),
-                nn.ReLU(inplace=True),
+            # 动态获取维度（与参考项目一致）
+            in_features = backbone.classifier[0].in_features   # = 576
+            hidden_dim = backbone.classifier[0].out_features    # = 1024
+
+            # 投影层（对齐参考项目：Linear + Hardswish + Dropout）
+            self.proj = nn.Sequential(
+                nn.Linear(in_features, hidden_dim),
+                nn.Hardswish(),
+                nn.Dropout(p=dropout),
             )
 
             # 双头分类
-            self.helmet_head = nn.Linear(128, 1)
-            self.vest_head = nn.Linear(128, 1)
+            self.helmet_head = nn.Linear(hidden_dim, 1)
+            self.vest_head = nn.Linear(hidden_dim, 1)
 
-        def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
             """
             前向传播。
 
@@ -71,14 +77,15 @@ if TORCH_AVAILABLE:
                 x: 输入张量 (batch_size, 3, 160, 160)
 
             Returns:
-                (helmet_logits, vest_logits) 元组
+                Dict 包含 "helmet_logits" 和 "vest_logits"
             """
             x = self.features(x)
             x = self.pool(x).flatten(1)
-            x = self.projector(x)
-            helmet_logits = self.helmet_head(x).squeeze(-1)
-            vest_logits = self.vest_head(x).squeeze(-1)
-            return helmet_logits, vest_logits
+            x = self.proj(x)
+            return {
+                "helmet_logits": self.helmet_head(x).squeeze(1),
+                "vest_logits": self.vest_head(x).squeeze(1),
+            }
 
 
     def load_ppe_attr_model(
@@ -88,6 +95,11 @@ if TORCH_AVAILABLE:
         """
         加载 PPE 属性分类模型。
 
+        对齐参考项目 D:\AI_code\安全帽反光衣属性识别\infer\run_ppe_pipeline.py 的加载方式：
+        - 支持 checkpoint 格式（提取 ckpt["model_state"]）
+        - 支持纯 state_dict 格式
+        - 支持 weights_only=True（安全加载）
+
         Args:
             model_path: 模型文件路径
             device: 设备 ('cpu' / 'cuda:0')
@@ -96,14 +108,21 @@ if TORCH_AVAILABLE:
             模型实例，如果加载失败返回 None
         """
         try:
-            model = PPEAttrModel(pretrained=False)
-            state_dict = torch.load(model_path, map_location='cpu')
-            model.load_state_dict(state_dict)
+            model = PPEAttrModel(pretrained=False).to(device)
+
+            # 加载权重（对齐参考项目的加载方式）
+            try:
+                ckpt = torch.load(model_path, map_location=device, weights_only=True)
+            except TypeError:
+                ckpt = torch.load(model_path, map_location=device)
+
+            # 判断格式：checkpoint（含 "model_state" key）还是纯 state_dict
+            if isinstance(ckpt, dict) and "model_state" in ckpt:
+                model.load_state_dict(ckpt["model_state"])
+            else:
+                model.load_state_dict(ckpt)
+
             model.eval()
-
-            if device.startswith('cuda') and torch.cuda.is_available():
-                model = model.to(device)
-
             logging.info(f"[PPEAttrModel] 模型加载成功: {model_path}")
             return model
         except Exception as e:
@@ -117,6 +136,9 @@ if TORCH_AVAILABLE:
     ) -> Optional['torch.Tensor']:
         """
         预处理裁剪图像。
+
+        预处理逻辑与参考项目等价（BGR→RGB→resize→normalize→CHW），
+        但使用 numpy + cv2 实现（避免引入 PIL 依赖）。
 
         Args:
             crop: 裁剪图像 (H, W, 3) BGR
@@ -180,11 +202,11 @@ if TORCH_AVAILABLE:
         if device.startswith('cuda') and torch.cuda.is_available():
             tensor = tensor.to(device)
 
-        # 推理
+        # 推理（对齐参考项目的 dict 输出格式）
         with torch.no_grad():
-            helmet_logits, vest_logits = model(tensor)
-            helmet_prob = torch.sigmoid(helmet_logits).item()
-            vest_prob = torch.sigmoid(vest_logits).item()
+            outputs = model(tensor)
+            helmet_prob = torch.sigmoid(outputs["helmet_logits"]).item()
+            vest_prob = torch.sigmoid(outputs["vest_logits"]).item()
 
         return helmet_prob, vest_prob
 
