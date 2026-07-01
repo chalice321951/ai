@@ -1743,9 +1743,18 @@ class StreamProcessor:
             except Exception as e:
                 logging.debug(f"[{self.name}] 保存未上报告警调试图失败: {e}")
             return None
-        # 构建 detection_dict，包含 PPE 违规计数和违规 track_ids
+        # 构建 detection_dict
+        # alarm_any_detection 只统计非 PPE 的检测目标（机械检测等）
+        # PPE 违规由专用规则（ppe_helmet_violation 等）处理，避免重复告警
+        non_ppe_track_ids = set()
+        for o in overlays or []:
+            class_name = str(o.get('class_name', '') or '')
+            if not class_name.startswith('ppe_'):
+                tid = o.get('track_id')
+                if tid is not None:
+                    non_ppe_track_ids.add(tid)
         detection_dict = {
-            'alarm_any_detection': float(target_info.get('track_count', 0)),
+            'alarm_any_detection': float(len(non_ppe_track_ids)),
         }
         # PPE 告警：统计各违规类型的数量，并收集每个类型的违规 track_ids
         if ppe_overlays:

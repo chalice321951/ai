@@ -208,7 +208,7 @@
     "fixed_alarm_level": 1
   },
   "ppe": {
-    "enabled": true,
+    "enabled": false,
     "detection": {
       "model_id": "3099",
       "person_class_names": ["pedestrian", "people", "person"],
