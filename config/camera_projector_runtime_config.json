@@ -54,7 +54,9 @@
         "_comment_06": "边缘禁画区配置：按图片短边比例计算。",
         "edge_margin_ratio": 0.05,
         "_edge_margin_ratio_comment": "距图片边缘多少比例以内不画线。例：1920×1080，0.03 => floor(1080×0.03)=32 像素边缘禁画区。"
-      }
+      },
+      "sn": "02352A22LA",
+      "interface_name": "罗家集"
     },
     "camera-1003": {
       "camera_name": "商储大厦",
@@ -107,7 +109,9 @@
         "_comment_06": "边缘禁画区配置：按图片短边比例计算。",
         "edge_margin_ratio": 0.0,
         "_edge_margin_ratio_comment": "距图片边缘多少比例以内不画线。例：1920×1080，0.03 => floor(1080×0.03)=32 像素边缘禁画区。"
-      }
+      },
+      "sn": "02323A2MKT",
+      "interface_name": "商储大厦"
     },
     "camera-1005": {
       "camera_name": "世贸广场",
@@ -160,7 +164,9 @@
         "_comment_06": "边缘禁画区配置：按图片短边比例计算。",
         "edge_margin_ratio": 0.0,
         "_edge_margin_ratio_comment": "距图片边缘多少比例以内不画线。例：1920×1080，0.03 => floor(1080×0.03)=32 像素边缘禁画区。"
-      }
+      },
+      "sn": "02323A2ML3",
+      "interface_name": "世茂广场"
     },
     "camera-1007": {
       "camera_name": "岗下江南郡",
@@ -213,7 +219,9 @@
         "_comment_06": "边缘禁画区配置：按图片短边比例计算。",
         "edge_margin_ratio": 0.0,
         "_edge_margin_ratio_comment": "距图片边缘多少比例以内不画线。例：1920×1080，0.03 => floor(1080×0.03)=32 像素边缘禁画区。"
-      }
+      },
+      "sn": "02323A2MKM",
+      "interface_name": "岗下江南郡九栋楼面"
     },
     "camera-1009": {
       "camera_name": "中央香榭",
@@ -266,7 +274,9 @@
         "_comment_06": "边缘禁画区配置：按图片短边比例计算。",
         "edge_margin_ratio": 0.0,
         "_edge_margin_ratio_comment": "距图片边缘多少比例以内不画线。例：1920×1080，0.03 => floor(1080×0.03)=32 像素边缘禁画区。"
-      }
+      },
+      "sn": "02323A3MLD",
+      "interface_name": "中央香榭2栋楼面"
     },
     "camera-1011": {
       "camera_name": "国动塔",
@@ -319,7 +329,9 @@
         "_comment_06": "边缘禁画区配置：按图片短边比例计算。",
         "edge_margin_ratio": 0.0,
         "_edge_margin_ratio_comment": "距图片边缘多少比例以内不画线。例：1920×1080，0.03 => floor(1080×0.03)=32 像素边缘禁画区。"
-      }
+      },
+      "sn": "02323A3MLF",
+      "interface_name": "新建长堎立交西单杆站"
     },
     "camera-1013": {
       "camera_name": "龙王庙",
@@ -372,7 +384,9 @@
         "_comment_06": "边缘禁画区配置：按图片短边比例计算。",
         "edge_margin_ratio": 0.0,
         "_edge_margin_ratio_comment": "距图片边缘多少比例以内不画线。例：1920×1080，0.03 => floor(1080×0.03)=32 像素边缘禁画区。"
-      }
+      },
+      "sn": "Y2611A228T",
+      "interface_name": "龙王庙小区104栋楼顶"
     },
     "camera-1015": {
       "camera_name": "锦天府汉庭酒店",
@@ -425,7 +439,9 @@
         "_comment_06": "边缘禁画区配置：按图片短边比例计算。",
         "edge_margin_ratio": 0.0,
         "_edge_margin_ratio_comment": "距图片边缘多少比例以内不画线。例：1920×1080，0.03 => floor(1080×0.03)=32 像素边缘禁画区。"
-      }
+      },
+      "sn": "02323A3MKL",
+      "interface_name": "锦天府汉庭酒店楼顶"
     },
     "camera-1017": {
       "camera_name": "绿地国际博览城",
@@ -478,7 +494,9 @@
         "_comment_06": "边缘禁画区配置：按图片短边比例计算。",
         "edge_margin_ratio": 0.0,
         "_edge_margin_ratio_comment": "距图片边缘多少比例以内不画线。例：1920×1080，0.03 => floor(1080×0.03)=32 像素边缘禁画区。"
-      }
+      },
+      "sn": "02323A3MLE",
+      "interface_name": "绿地国际博览城-博浩205栋楼顶"
     },
     "camera-1019": {
       "camera_name": "交投大厦旁国动塔",
@@ -531,7 +549,9 @@
         "_comment_06": "边缘禁画区配置：按图片短边比例计算。",
         "edge_margin_ratio": 0.0,
         "_edge_margin_ratio_comment": "距图片边缘多少比例以内不画线。例：1920×1080，0.03 => floor(1080×0.03)=32 像素边缘禁画区。"
-      }
+      },
+      "sn": "02311A26W9",
+      "interface_name": "交投大厦旁国动塔"
     },
     "camera-1021": {
       "camera_name": "东湖急救中心",
@@ -584,15 +604,108 @@
         "_comment_06": "边缘禁画区配置：按图片短边比例计算。",
         "edge_margin_ratio": 0.0,
         "_edge_margin_ratio_comment": "距图片边缘多少比例以内不画线。例：1920×1080，0.03 => floor(1080×0.03)=32 像素边缘禁画区。"
-      }
+      },
+      "sn": "02323A2MLJ",
+      "interface_name": "东湖急救中心"
     }
   },
   "realtime_ptz": {
-    "_comment_01": "PTZ接口配置：用于 camera_ptz_config_updater.py。该模块会读取当前被控摄像头名称和 PTZ 参数，并写入 camera_projector_config.json。",
-    "ptz_url": "https://10.1.129.99:8443/camcontrol/camera/ptz?handle=1&chn=1",
-    "_ptz_url_comment": "接口1：获取当前被控摄像头实时云台角度和变焦倍数，返回 JSON，例如 {\"x\":166.48,\"y\":27.39,\"z\":1.0}。",
-    "current_device_name_url": "https://10.1.129.99:8443/camcontrol/camera/currentDeviceName",
-    "_current_device_name_url_comment": "接口2：获取当前被控摄像头中文名称，返回纯文本。",
+    "_comment_01": "PTZ接口配置：本版本使用按 sn 查询指定摄像头 PTZ 的新接口，逐个轮询所有摄像头，并写入 camera_projector_config.json 的 cameras.*.info。",
+    "all_camera_ptz_url_template": "https://10.1.129.99:8443/camscontrol/camera/ptz?sn={sn}&chn=1",
+    "_all_camera_ptz_url_template_comment": "新接口模板：{sn} 会被替换为 camera_sn_list 中每个摄像头的 sn。返回 JSON，例如 {\"name\":\"罗家集\",\"x\":263.22,\"y\":20.62,\"z\":1.0,\"sn\":\"02352A22LA\"}。",
+    "apply_yaw_offset": true,
+    "_apply_yaw_offset_comment": "False：gimbal_yaw 直接取接口返回的 x；True：gimbal_yaw = normalize360(x + yaw_offset_by_camera_name[camera_name])。本次新接口按甲方说明默认取 True。",
+    "camera_sn_list": [
+      {
+        "port": 8282,
+        "ip": "223.84.147.133",
+        "name": "东湖急救中心",
+        "online": true,
+        "handle": 7,
+        "sn": "02323A2MLJ"
+      },
+      {
+        "port": 8282,
+        "ip": "223.83.140.48",
+        "name": "锦天府汉庭酒店楼顶",
+        "online": true,
+        "handle": 3,
+        "sn": "02323A3MKL"
+      },
+      {
+        "port": 8282,
+        "ip": "223.83.128.219",
+        "name": "岗下江南郡九栋楼面",
+        "online": true,
+        "handle": 2,
+        "sn": "02323A2MKM"
+      },
+      {
+        "port": 8282,
+        "ip": "223.84.57.8",
+        "name": "世茂广场",
+        "online": true,
+        "handle": 1,
+        "sn": "02323A2ML3"
+      },
+      {
+        "port": 8282,
+        "ip": "223.83.133.38",
+        "name": "中央香榭2栋楼面",
+        "online": true,
+        "handle": 4,
+        "sn": "02323A3MLD"
+      },
+      {
+        "port": 8282,
+        "ip": "183.216.49.235",
+        "name": "商储大厦",
+        "online": true,
+        "handle": 5,
+        "sn": "02323A2MKT"
+      },
+      {
+        "port": 8282,
+        "ip": "223.83.147.78",
+        "name": "新建长堎立交西单杆站",
+        "online": true,
+        "handle": 6,
+        "sn": "02323A3MLF"
+      },
+      {
+        "port": 8282,
+        "ip": "223.83.140.41",
+        "name": "绿地国际博览城-博浩205栋楼顶",
+        "online": true,
+        "handle": 8,
+        "sn": "02323A3MLE"
+      },
+      {
+        "port": 8282,
+        "ip": "223.83.128.221",
+        "name": "罗家集",
+        "online": true,
+        "handle": 9,
+        "sn": "02352A22LA"
+      },
+      {
+        "port": 8282,
+        "ip": "223.83.133.39",
+        "name": "龙王庙小区104栋楼顶",
+        "online": true,
+        "handle": 10,
+        "sn": "Y2611A228T"
+      },
+      {
+        "port": 8282,
+        "ip": "223.83.140.38",
+        "name": "交投大厦旁国动塔",
+        "online": true,
+        "handle": 11,
+        "sn": "02311A26W9"
+      }
+    ],
+    "_camera_sn_list_comment": "全部摄像头 sn 列表。程序会按此列表逐个请求 all_camera_ptz_url_template，读取每个摄像头的 x/y/z。name 为接口返回中文名，对应 interface_name_to_camera_name 左侧。",
     "interface_name_to_camera_name": {
       "罗家集": "罗家集",
       "商储大厦": "商储大厦",
@@ -606,7 +719,7 @@
       "交投大厦旁国动塔": "交投大厦旁国动塔",
       "东湖急救中心": "东湖急救中心"
     },
-    "_interface_name_to_camera_name_comment": "左侧为 currentDeviceName 接口返回的中文名称，右侧为 camera_projector_config.json 中 cameras.*.camera_name。",
+    "_interface_name_to_camera_name_comment": "左侧为 PTZ 接口返回的中文名称，右侧为 camera_projector_config.json 中 cameras.*.camera_name。",
     "yaw_offset_by_camera_name": {
       "罗家集": 253.5,
       "商储大厦": 10.27,
@@ -620,6 +733,10 @@
       "交投大厦旁国动塔": -72.73,
       "东湖急救中心": 145.57
     },
-    "_yaw_offset_by_camera_name_comment": "gimbal_yaw = normalize360(接口x值 + 当前 camera_name 对应偏移量)。gimbal_pitch = -接口y值；gimbal_roll 恒为 0；zoom_factor = 接口z值。"
+    "_yaw_offset_by_camera_name_comment": "仅当 apply_yaw_offset=True 时生效。",
+    "legacy_ptz_url": "https://10.1.129.99:8443/camcontrol/camera/ptz?handle=1&chn=1",
+    "_legacy_ptz_url_comment": "旧接口地址，仅保留作回滚参考；本版本默认不再依赖当前被控摄像头接口。",
+    "legacy_current_device_name_url": "https://10.1.129.99:8443/camcontrol/camera/currentDeviceName",
+    "_legacy_current_device_name_url_comment": "旧接口地址，仅保留作回滚参考；本版本默认不再依赖 currentDeviceName。"
   }
 }

@@ -42,17 +42,8 @@
       },
       "needs_completion": false,
       "note": "参数已人工校准",
-      "realtime_ptz": {
-        "enabled": true,
-        "updated_at": "2026-05-15 11:06:34",
-        "interface_device_name": "罗家集",
-        "camera_name": "罗家集",
-        "raw_ptz": {
-          "x": 243.83,
-          "y": 16.98,
-          "z": 1.0
-        }
-      }
+      "sn": "02352A22LA",
+      "interface_name": "罗家集"
     },
     "camera-1003": {
       "enabled": true,
@@ -78,17 +69,8 @@
       },
       "needs_completion": true,
       "note": "参数已校准byLXP",
-      "realtime_ptz": {
-        "enabled": true,
-        "updated_at": "2026-05-15 11:05:51",
-        "interface_device_name": "商储大厦",
-        "camera_name": "商储大厦",
-        "raw_ptz": {
-          "x": 266.78,
-          "y": 30.2,
-          "z": 1.0
-        }
-      }
+      "sn": "02323A2MKT",
+      "interface_name": "商储大厦"
     },
     "camera-1005": {
       "enabled": true,
@@ -114,17 +96,8 @@
       },
       "needs_completion": true,
       "note": "参数已校准byLXP",
-      "realtime_ptz": {
-        "enabled": true,
-        "updated_at": "2026-05-15 11:04:14",
-        "interface_device_name": "世茂广场",
-        "camera_name": "世贸广场",
-        "raw_ptz": {
-          "x": 43.51,
-          "y": 21.15,
-          "z": 1.0
-        }
-      }
+      "sn": "02323A2ML3",
+      "interface_name": "世茂广场"
     },
     "camera-1007": {
       "enabled": true,
@@ -150,17 +123,8 @@
       },
       "needs_completion": true,
       "note": "参数已校准byLXP",
-      "realtime_ptz": {
-        "enabled": true,
-        "updated_at": "2026-05-15 11:31:58",
-        "interface_device_name": "岗下江南郡九栋楼面",
-        "camera_name": "岗下江南郡",
-        "raw_ptz": {
-          "x": 358.14,
-          "y": 18.79,
-          "z": 1.27
-        }
-      }
+      "sn": "02323A2MKM",
+      "interface_name": "岗下江南郡九栋楼面"
     },
     "camera-1009": {
       "enabled": true,
@@ -186,17 +150,8 @@
       },
       "needs_completion": true,
       "note": "参数已校准byLXP",
-      "realtime_ptz": {
-        "enabled": true,
-        "updated_at": "2026-05-15 11:51:22",
-        "interface_device_name": "中央香榭2栋楼面",
-        "camera_name": "中央香榭",
-        "raw_ptz": {
-          "x": 281.44,
-          "y": 21.58,
-          "z": 1.0
-        }
-      }
+      "sn": "02323A3MLD",
+      "interface_name": "中央香榭2栋楼面"
     },
     "camera-1011": {
       "enabled": true,
@@ -222,17 +177,8 @@
       },
       "needs_completion": true,
       "note": "参数已校准byLXP",
-      "realtime_ptz": {
-        "enabled": true,
-        "updated_at": "2026-05-15 11:19:12",
-        "interface_device_name": "新建长堎立交西单杆站",
-        "camera_name": "国动塔",
-        "raw_ptz": {
-          "x": 203.34,
-          "y": 20.05,
-          "z": 1.0
-        }
-      }
+      "sn": "02323A3MLF",
+      "interface_name": "新建长堎立交西单杆站"
     },
     "camera-1013": {
       "enabled": true,
@@ -248,8 +194,8 @@
       "line_thickness": 4,
       "cache_overlay": true,
       "info": {
-        "latitude": 28.6821820,
-        "longitude": 115.8312880,
+        "latitude": 28.682182,
+        "longitude": 115.831288,
         "height": 25.0,
         "gimbal_yaw": 300.46,
         "gimbal_pitch": -10.7,
@@ -258,17 +204,8 @@
       },
       "needs_completion": true,
       "note": "参数已校准byLXP",
-      "realtime_ptz": {
-        "enabled": true,
-        "updated_at": "2026-05-15 11:30:29",
-        "interface_device_name": "龙王庙小区104栋楼顶",
-        "camera_name": "龙王庙",
-        "raw_ptz": {
-          "x": 166.6,
-          "y": 10.7,
-          "z": 1.0
-        }
-      }
+      "sn": "Y2611A228T",
+      "interface_name": "龙王庙小区104栋楼顶"
     },
     "camera-1015": {
       "enabled": true,
@@ -294,17 +231,8 @@
       },
       "needs_completion": true,
       "note": "参数已校准byLXP",
-      "realtime_ptz": {
-        "enabled": true,
-        "updated_at": "2026-05-15 11:03:04",
-        "interface_device_name": "锦天府汉庭酒店楼顶",
-        "camera_name": "锦天府汉庭酒店",
-        "raw_ptz": {
-          "x": 163.4,
-          "y": 23.21,
-          "z": 1.04
-        }
-      }
+      "sn": "02323A3MKL",
+      "interface_name": "锦天府汉庭酒店楼顶"
     },
     "camera-1017": {
       "enabled": true,
@@ -330,17 +258,8 @@
       },
       "needs_completion": true,
       "note": "参数已校准byLXP",
-      "realtime_ptz": {
-        "enabled": true,
-        "updated_at": "2026-05-15 11:07:00",
-        "interface_device_name": "绿地国际博览城-博浩205栋楼顶",
-        "camera_name": "绿地国际博览城",
-        "raw_ptz": {
-          "x": 241.24,
-          "y": 16.57,
-          "z": 1.0
-        }
-      }
+      "sn": "02323A3MLE",
+      "interface_name": "绿地国际博览城-博浩205栋楼顶"
     },
     "camera-1019": {
       "enabled": true,
@@ -366,17 +285,8 @@
       },
       "needs_completion": true,
       "note": "参数已校准byLXP",
-      "realtime_ptz": {
-        "enabled": true,
-        "updated_at": "2026-05-15 11:27:40",
-        "interface_device_name": "交投大厦旁国动塔",
-        "camera_name": "交投大厦旁国动塔",
-        "raw_ptz": {
-          "x": 178.85,
-          "y": 6.05,
-          "z": 2.67
-        }
-      }
+      "sn": "02311A26W9",
+      "interface_name": "交投大厦旁国动塔"
     },
     "camera-1021": {
       "enabled": true,
@@ -401,7 +311,9 @@
         "zoom_factor": 1.0
       },
       "needs_completion": true,
-      "note": "参数已校准byLXP"
+      "note": "参数已校准byLXP",
+      "sn": "02323A2MLJ",
+      "interface_name": "东湖急救中心"
     }
   }
 }
