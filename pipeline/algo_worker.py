@@ -63,7 +63,9 @@ class AlgoWorker:
         self._conf_threshold = float(getattr(config, 'default_conf_threshold', 0.5) if config else 0.5)
         self._device = 'cpu'
         self._tracker_config = tracker_config
-        self._tracking_enabled = bool(getattr(config, 'tracking_enabled', False) if config else False)
+        # 外部 camera.py 已有 SimpleTracker 负责追踪，AlgoWorker 只做检测（predict），
+        # 与旧版 UnifiedInferenceScheduler 行为一致，避免双重追踪和 model.track() 潜在问题。
+        self._tracking_enabled = False
         self._tracking_persist = bool(getattr(config, 'tracking_persist', True) if config else True)
 
         # 每个流独立的 tracker 状态缓存
