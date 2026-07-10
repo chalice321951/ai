@@ -28,6 +28,7 @@ _STREAM_STRATEGY_BY_NAME = {
     "龙王庙": "between_orange_x_scanline_level1",
     "岗下江南郡": "orange_enclosed_level1",
     "国动塔": "orange_enclosed_level1_strict",
+    "交投大厦旁国动塔": "orange_enclosed_level1_strict",
     "中央香榭": "orange_enclosed_level1_strict",
     "罗家集": "luojiaji_mixed",
 }
