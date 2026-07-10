@@ -1541,6 +1541,10 @@ class StreamProcessor:
                 frame_lag = max(0, fid - result_fid)
                 max_result_age = float(getattr(self.config, 'max_infer_result_age', 1.0) or 1.0)
                 max_frame_lag = max(1, int(getattr(self.config, 'max_infer_frame_lag', 5) or 5))
+                logging.debug(
+                    f"[{self.name}] 推理结果: result_fid={result_fid} cur_fid={fid} "
+                    f"age={result_age:.2f}s lag={frame_lag} max_age={max_result_age}s max_lag={max_frame_lag}"
+                )
                 if (
                     result_fid > self._last_applied_result_frame_id
                     and result_age <= max_result_age

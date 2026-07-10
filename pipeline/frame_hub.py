@@ -41,6 +41,13 @@ class FrameHub:
         # 拷贝帧数据，确保线程安全
         frame_copy = np.ascontiguousarray(frame, dtype=np.uint8)
 
+        # 调试：记录首次提交的流
+        with self._lock:
+            is_new = stream_key not in self._frames
+        if is_new:
+            import logging
+            logging.info(f"[FrameHub] 新流提交帧: stream_key={stream_key} fid={frame_id}")
+
         with self._lock:
             self._frames[stream_key] = {
                 "frame": frame_copy,
@@ -93,13 +100,35 @@ class FrameHub:
             stream_key: 流标识
 
         Returns:
-            (frame, frame_id) 元组，如果流不存在返回 None
+            (frame, frame_id) 元组，如果流不存在或已被 take 返回 None
         """
         with self._lock:
             entry = self._frames.get(stream_key)
-            if entry is None:
+            if entry is None or entry.get("frame") is None:
                 return None
             return entry["frame"], entry["frame_id"]
+
+    def take_frame_with_id(self, stream_key: str) -> Optional[tuple]:
+        """
+        取出流的最新帧并清空 hub 中的引用（避免同一帧被反复推理）。
+
+        与旧版 UnifiedInferenceScheduler._pick_batch 行为一致：
+        取出帧后置为 None，等 camera.py 提交新帧才会再有内容。
+
+        Args:
+            stream_key: 流标识
+
+        Returns:
+            (frame, frame_id) 元组，如果流不存在或没有新帧返回 None
+        """
+        with self._lock:
+            entry = self._frames.get(stream_key)
+            if entry is None or entry.get("frame") is None:
+                return None
+            frame = entry["frame"]
+            frame_id = entry["frame_id"]
+            entry["frame"] = None  # 清空引用，避免被重复取
+            return frame, frame_id
 
     def remove_stream(self, stream_key: str) -> None:
         """

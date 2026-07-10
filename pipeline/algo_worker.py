@@ -177,7 +177,14 @@ class AlgoWorker:
         }
 
     def _worker_loop(self, stream_keys: list = None) -> None:
-        logging.info(f"[AlgoWorker-{self.algo_id}] Worker 循环开始")
+        logging.info(f"[AlgoWorker-{self.algo_id}] Worker 循环开始（批推理模式）")
+
+        # 尝试引入 torch 用于 CUDA sync（关键：与旧版 InferenceEngine.infer_batch 行为一致）
+        try:
+            import torch
+            _torch = torch
+        except Exception:
+            _torch = None
 
         while not self._stop_event.is_set():
             if stream_keys:
@@ -190,50 +197,95 @@ class AlgoWorker:
                 self._wake_event.clear()
                 continue
 
-            has_work = False
+            # 收集所有流的最新帧到一个批次（复刻旧版 _pick_batch 行为）
+            batch_streams = []
+            batch_frames = []
+            batch_frame_ids = []
+
             for stream_key in target_streams:
                 if self._stop_event.is_set():
                     break
 
-                # 获取最新帧（带 frame_id）
-                frame_with_id = self.frame_hub.get_frame_with_id(stream_key)
+                # take_frame_with_id：取出后清空，避免同一帧被重复推理
+                frame_with_id = self.frame_hub.take_frame_with_id(stream_key)
                 if frame_with_id is None:
                     continue
                 frame, hub_frame_id = frame_with_id
 
-                has_work = True
                 self._total_frames += 1
 
-                # 每个流独立的帧计数器
+                # 每个流独立的帧计数器（interval 跳帧仍按流独立）
                 counter = self._stream_frame_counters.get(stream_key, 0) + 1
                 self._stream_frame_counters[stream_key] = counter
 
                 if counter % self._inference_interval != 0:
                     continue
 
-                # 执行推理
-                start_time = time.time()
-                try:
-                    results = self._run_inference(frame, stream_key)
-                    inference_time_ms = (time.time() - start_time) * 1000
+                batch_streams.append(stream_key)
+                batch_frames.append(frame)
+                batch_frame_ids.append(hub_frame_id)
 
+            if not batch_frames:
+                self._wake_event.wait(0.05)
+                self._wake_event.clear()
+                continue
+
+            # 执行批推理（一次 model.predict 处理多流的帧）
+            start_time = time.time()
+            try:
+                res_batch = self.model.predict(
+                    batch_frames,
+                    conf=self._conf_threshold,
+                    device=self._device,
+                    verbose=False,
+                )
+
+                # 关键：显式等待 GPU 完成，避免异步队列积累导致状态污染
+                if _torch is not None and str(self._device).lower().startswith('cuda'):
+                    try:
+                        _torch.cuda.synchronize()
+                    except Exception:
+                        pass
+
+                inference_time_ms = (time.time() - start_time) * 1000
+
+                if not isinstance(res_batch, (list, tuple)):
+                    res_batch = [res_batch]
+
+                # 分发结果到每个流
+                for idx, stream_key in enumerate(batch_streams):
+                    if idx >= len(res_batch):
+                        continue
+                    single_result = res_batch[idx]
+
+                    # 统计检测数
+                    det_count = 0
+                    try:
+                        if single_result is not None and hasattr(single_result, 'boxes') and single_result.boxes is not None:
+                            det_count = len(single_result.boxes)
+                    except Exception:
+                        pass
+
+                    # 用 list 包裹保持与 _extract_raw_detections 的兼容格式
                     self.result_store.store_result(
                         stream_key=stream_key,
                         algo_id=self.algo_id,
-                        results=results,
-                        frame_id=hub_frame_id,
+                        results=[single_result],
+                        frame_id=batch_frame_ids[idx],
                         inference_time_ms=inference_time_ms,
                     )
 
                     self._total_inferences += 1
-                    self._total_inference_time_ms += inference_time_ms
 
-                except Exception as e:
-                    logging.error(f"[AlgoWorker-{self.algo_id}] 推理失败: {e}")
+                    logging.info(
+                        f"[AlgoWorker-{self.algo_id}] stream={stream_key} fid={batch_frame_ids[idx]} "
+                        f"detections={det_count} infer_time={inference_time_ms:.0f}ms batch={len(batch_frames)}"
+                    )
 
-            if not has_work:
-                self._wake_event.wait(0.05)
-                self._wake_event.clear()
+                self._total_inference_time_ms += inference_time_ms
+
+            except Exception as e:
+                logging.error(f"[AlgoWorker-{self.algo_id}] 批量推理失败: {e}")
 
         logging.info(f"[AlgoWorker-{self.algo_id}] Worker 循环结束")
 
