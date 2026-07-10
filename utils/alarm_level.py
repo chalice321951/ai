@@ -25,7 +25,7 @@ _LEVEL_BY_COLOR = {
     "orange": 3,
 }
 _STREAM_STRATEGY_BY_NAME = {
-    "龙王庙": "orange_above_line_level1",
+    "龙王庙": "between_orange_x_scanline_level1",
     "岗下江南郡": "orange_enclosed_level1",
     "国动塔": "orange_enclosed_level1_strict",
     "中央香榭": "orange_enclosed_level1_strict",
@@ -533,6 +533,48 @@ def _classify_orange_above_line_level1_details(
     return details
 
 
+def _classify_between_orange_x_scanline_details(
+    scan_x: float,
+    scan_y: float,
+    projected_curves: Dict[str, List[Dict[str, Any]]],
+    curve_colors: Dict[str, str],
+) -> Dict[str, Any]:
+    """
+    垂直扫描线策略：在目标物 x 列上找橙线的 y 交点，判断目标 y 是否夹在两个交点之间。
+
+    适用于两条大致横向的平行橙线之间的保护区（如龙王庙的高架桥场景）：
+    - 沿 scan_x 位置画一条垂直线
+    - 找出这条垂直线与所有橙线的 y 交点
+    - 若目标 scan_y 在最上 y 交点和最下 y 交点之间 -> level 1
+    - 否则 -> 不报警
+    """
+    details: Dict[str, Any] = {
+        "alarm_level": None,
+        "reason": "no_orange_line_at_x",
+        "boundaries": [],
+        "outside_orange": False,
+    }
+    orange_y_positions = _collect_color_positions_at_x(scan_x, projected_curves, curve_colors, "orange")
+    details["boundaries"] = [(float(scan_x), float(y)) for y in orange_y_positions]
+
+    # 至少要有两条橙线才能构成"上下夹住"的判断
+    if len(orange_y_positions) < 2:
+        details["reason"] = "not_enough_orange_at_x"
+        return details
+
+    top_y = min(orange_y_positions)
+    bottom_y = max(orange_y_positions)
+
+    if top_y <= scan_y <= bottom_y:
+        details["alarm_level"] = 1
+        details["reason"] = "between_two_orange_x_scanline"
+        return details
+
+    details["reason"] = "outside_two_orange_x_scanline"
+    details["outside_orange"] = True
+    return details
+
+
 def _classify_stream_specific_details(
     stream_name: str,
     scan_x: float,
@@ -550,6 +592,8 @@ def _classify_stream_specific_details(
         return _classify_orange_enclosed_level1_details(scan_x, boundaries, projected_curves, curve_colors, scan_y)
     if strategy == "orange_enclosed_level1_strict":
         return _classify_orange_enclosed_level1_details(scan_x, boundaries, projected_curves, curve_colors, scan_y)
+    if strategy == "between_orange_x_scanline_level1":
+        return _classify_between_orange_x_scanline_details(scan_x, scan_y, projected_curves, curve_colors)
     if strategy == "luojiaji_mixed":
         orange_positions = [bx for bx, color_name in boundaries if color_name == "orange"]
         if len(orange_positions) >= 2 and min(orange_positions) <= scan_x <= max(orange_positions):
@@ -727,7 +771,7 @@ def classify_point_alarm_level_uv_details(
     curve_colors = curve_colors_from_border_file(border_json_path)
     details["visible_colors"] = visible_boundary_colors_from_projected(projected_curves, border_json_path)
     strategy = _resolve_stream_strategy(stream_name)
-    strict_scanline_strategies = {"orange_enclosed_level1_strict"}
+    strict_scanline_strategies = {"orange_enclosed_level1_strict", "between_orange_x_scanline_level1"}
     use_strict_scanline = strategy in strict_scanline_strategies
     y_offsets = [0.0]
     if not use_strict_scanline:
