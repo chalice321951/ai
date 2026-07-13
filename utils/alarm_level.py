@@ -26,7 +26,7 @@ _LEVEL_BY_COLOR = {
 }
 _STREAM_STRATEGY_BY_NAME = {
     "龙王庙": "between_orange_x_scanline_level1",
-    "岗下江南郡": "orange_enclosed_level1",
+    "岗下江南郡": "luojiaji_mixed",
     "国动塔": "orange_enclosed_level1_strict",
     "交投大厦旁国动塔": "orange_enclosed_level1_strict",
     "中央香榭": "orange_enclosed_level1_strict",
@@ -585,7 +585,7 @@ def _classify_stream_specific_details(
     curve_colors: Dict[str, str],
 ) -> Optional[Dict[str, Any]]:
     strategy = _resolve_stream_strategy(stream_name)
-    if strategy == "default":
+    if strategy in ("default", "default_strict"):
         return None
     if strategy == "orange_above_line_level1":
         return _classify_orange_above_line_level1_details(scan_x, scan_y, projected_curves, curve_colors)
@@ -772,7 +772,7 @@ def classify_point_alarm_level_uv_details(
     curve_colors = curve_colors_from_border_file(border_json_path)
     details["visible_colors"] = visible_boundary_colors_from_projected(projected_curves, border_json_path)
     strategy = _resolve_stream_strategy(stream_name)
-    strict_scanline_strategies = {"orange_enclosed_level1_strict", "between_orange_x_scanline_level1"}
+    strict_scanline_strategies = {"orange_enclosed_level1_strict", "between_orange_x_scanline_level1", "default_strict"}
     use_strict_scanline = strategy in strict_scanline_strategies
     y_offsets = [0.0]
     if not use_strict_scanline:
