@@ -17,32 +17,21 @@
     "match_iou": 0.5
   },
   "models": {
-    "default_conf_threshold": 0.75,
+    "default_conf_threshold": 0.5,
     "model_mappings": {
       "detection": {
-        "3001": "/home/lenovo/models/大型机械-v2-6cf7c7b0.pt",
-        "3099": "/home/lenovo/models/3002-0518.pt"
+        "3001": "/home/lenovo/models/大型机械-v3.pt"
       }
     },
     "model_class_filters": {
       "_global": [],
-      "3001": ["guanche", "zhatuche"],
-      "3099": ["bicycle",
-      "car",
-      "van",
-      "truck",
-      "tricycle",
-      "awning-tricycle",
-      "bus",
-      "motor"]
+      "3001": ["guanche", "zhatuche"]
     },
     "model_intervals": {
-      "3001": 3,
-      "3099": 3
+      "3001": 3
     },
     "model_conf_thresholds": {
-      "3001": 0.75,
-      "3099": 0.7
+      "3001": 0.5
     }
   },
   "streams": [
