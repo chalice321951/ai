@@ -152,6 +152,7 @@ class CameraConfig:
         self.model_device = self.inference_device
         self.inference_single_thread_worker = bool(inference.get('single_thread_worker', False))
         self.inference_submit_timeout = float(inference.get('submit_timeout', 30.0) or 30.0)
+        self.imgsz = int(inference.get('imgsz', 640) or 640)
 
     def _load_stream_device_config(self):
         stream = self.config.get('stream', {})
@@ -410,11 +411,11 @@ class CameraConfig:
                 if ppe_model_id not in registered_ids:
                     warnings.append(f"PPE detection.model_id '{ppe_model_id}' 未在 model_mappings 中注册")
 
-        # 检查 tracker 配置
+        # 检查 tracker 配置（bytetrack.yaml / botsort.yaml 是 ultralytics 内置配置，无需本地存在）
         tracker_path = self.tracking_tracker
-        if tracker_path and not os.path.exists(tracker_path):
-            # tracker 文件可能在 ultralytics 包内，只做警告
-            warnings.append(f"ByteTrack 配置文件不存在（可能在 ultralytics 包内）: {tracker_path}")
+        _builtin_trackers = {'bytetrack.yaml', 'botsort.yaml'}
+        if tracker_path and not os.path.exists(tracker_path) and tracker_path not in _builtin_trackers:
+            warnings.append(f"ByteTrack 配置文件不存在: {tracker_path}")
 
         # 检查流配置
         streams = self.config.get('streams', [])

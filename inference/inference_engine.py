@@ -30,6 +30,9 @@ class InferenceEngine:
         self._tracker_config = str(getattr(self.config, 'tracking_tracker', 'bytetrack.yaml') or 'bytetrack.yaml')
         self._tracking_persist = bool(getattr(self.config, 'tracking_persist', True))
 
+        # 推理图片大小
+        self._imgsz = int(getattr(self.config, 'imgsz', 640) or 640)
+
         self._single_thread_worker_enabled = bool(getattr(self.config, 'inference_single_thread_worker', False))
         self._submit_timeout = float(getattr(self.config, 'inference_submit_timeout', 30.0) or 30.0)
         self._worker_queue: "queue.Queue" = queue.Queue(maxsize=256)
@@ -166,10 +169,11 @@ class InferenceEngine:
                         device=device,
                         persist=self._tracking_persist,
                         tracker=self._tracker_config,
+                        imgsz=self._imgsz,
                         verbose=False
                     )
                 else:
-                    res = model.predict(frame, conf=conf, device=device, verbose=False)
+                    res = model.predict(frame, conf=conf, device=device, imgsz=self._imgsz, verbose=False)
                 self._trace_infer_stage(stream_key, model_id, 'call_return', mode=infer_mode)
                 if self._torch is not None and str(device).lower().startswith('cuda'):
                     self._trace_infer_stage(stream_key, model_id, 'cuda_sync_start', mode=infer_mode)
@@ -239,10 +243,11 @@ class InferenceEngine:
                             device=device,
                             persist=self._tracking_persist,
                             tracker=self._tracker_config,
+                            imgsz=self._imgsz,
                             verbose=False
                         )
                     else:
-                        res_batch = model.predict(frames, conf=conf, device=device, verbose=False)
+                        res_batch = model.predict(frames, conf=conf, device=device, imgsz=self._imgsz, verbose=False)
                     if self._torch is not None and str(device).lower().startswith('cuda'):
                         self._torch.cuda.synchronize()
                     self._trace_infer_stage('batch', model_id, 'batch_call_return', size=len(frames), mode=infer_mode)

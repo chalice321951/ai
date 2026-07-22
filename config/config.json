@@ -4,7 +4,8 @@
     "inference_engine_type": "optimized"
   },
   "inference": {
-    "device": "gpu"
+    "device": "gpu",
+    "imgsz": 960
   },
   "stream": {
     "pull_device": "gpu",
@@ -13,7 +14,7 @@
   "tracking": {
     "persist": true,
     "tracker": "bytetrack.yaml",
-    "conf_threshold": 0.75,
+    "conf_threshold": 0.7,
     "match_iou": 0.5
   },
   "models": {
@@ -31,7 +32,7 @@
       "3001": 3
     },
     "model_conf_thresholds": {
-      "3001": 0.5
+      "3001": 0.7
     }
   },
   "streams": [

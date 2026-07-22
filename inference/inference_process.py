@@ -105,6 +105,7 @@ def _worker_main(
     tracking_tracker  = str(tracking_cfg.get('tracking_tracker', 'bytetrack.yaml') or 'bytetrack.yaml')
     tracking_conf     = float(tracking_cfg.get('tracking_conf_threshold', 0.3))
     default_conf      = float(tracking_cfg.get('default_conf_threshold', 0.5))
+    imgsz             = int(tracking_cfg.get('imgsz', 640) or 640)
 
     logging.info(f"推理子进程就绪: models={list(models.keys())} tracking={tracking_enabled}")
 
@@ -183,9 +184,10 @@ def _worker_main(
                         verbose=False,
                         persist=tracking_persist,
                         tracker=tracking_tracker,
+                        imgsz=imgsz,
                     )
                 else:
-                    res = model.predict(frame, conf=conf, device=device, verbose=False)
+                    res = model.predict(frame, conf=conf, device=device, imgsz=imgsz, verbose=False)
 
                 if torch_ref is not None and str(device).lower().startswith('cuda'):
                     torch_ref.cuda.synchronize()
@@ -245,6 +247,7 @@ class InferenceProxy:
             'tracking_tracker':        str(getattr(self._config, 'tracking_tracker', 'bytetrack.yaml') or 'bytetrack.yaml'),
             'tracking_conf_threshold': float(getattr(self._config, 'tracking_conf_threshold', 0.3)),
             'default_conf_threshold':  float(getattr(self._config, 'default_conf_threshold', 0.5)),
+            'imgsz':                   int(getattr(self._config, 'imgsz', 640) or 640),
         }
 
     def _start_process(self):
