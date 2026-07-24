@@ -54,6 +54,7 @@ class MultiModelPipeline:
         device: str = 'cpu',
         inference_interval: int = 1,
         tracker_config: str = 'bytetrack.yaml',
+        cascade_verifier: Any = None,
     ) -> bool:
         """
         添加模型到管线。
@@ -65,6 +66,7 @@ class MultiModelPipeline:
             device: 推理设备
             inference_interval: 推理间隔（每 N 帧推理一次）
             tracker_config: ByteTrack 配置文件路径
+            cascade_verifier: 可选的 CascadeVerifier 实例，对本模型检测框做二次校验
 
         Returns:
             是否添加成功
@@ -81,6 +83,7 @@ class MultiModelPipeline:
             result_store=self._result_store,
             config=self.config,
             tracker_config=tracker_config,
+            cascade_verifier=cascade_verifier,
         )
         worker.set_conf_threshold(conf_threshold)
         worker.set_device(device)

@@ -41,6 +41,7 @@ class AlgoWorker:
         result_store: ResultStore,
         config: Any = None,
         tracker_config: str = "bytetrack.yaml",
+        cascade_verifier: Any = None,
     ):
         """
         初始化 AlgoWorker。
@@ -52,12 +53,15 @@ class AlgoWorker:
             result_store: ResultStore 实例
             config: 配置对象
             tracker_config: ByteTrack 配置文件路径
+            cascade_verifier: 可选的 CascadeVerifier 实例，用于对本模型的检测框
+                做二次校验（如用人车模型复核大型机械模型的误检框）
         """
         self.algo_id = algo_id
         self.model = model
         self.frame_hub = frame_hub
         self.result_store = result_store
         self.config = config
+        self._cascade_verifier = cascade_verifier
 
         # 推理配置
         self._conf_threshold = float(getattr(config, 'default_conf_threshold', 0.5) if config else 0.5)
@@ -257,6 +261,12 @@ class AlgoWorker:
                     if idx >= len(res_batch):
                         continue
                     single_result = res_batch[idx]
+
+                    # 级联二次校验：用校验模型复核本模型的检测框，剔除误检
+                    if self._cascade_verifier is not None:
+                        single_result = self._cascade_verifier.filter_result(
+                            batch_frames[idx], single_result
+                        )
 
                     # 统计检测数
                     det_count = 0

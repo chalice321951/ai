@@ -21,7 +21,8 @@
     "default_conf_threshold": 0.5,
     "model_mappings": {
       "detection": {
-        "3001": "/home/lenovo/models/大型机械-v3.pt"
+        "3001": "/home/lenovo/models/大型机械-v7-cf18c89b.pt",
+        "3002": "/home/lenovo/models/vis-m-bs16-sz960.pt"
       }
     },
     "model_class_filters": {
@@ -32,7 +33,27 @@
       "3001": 3
     },
     "model_conf_thresholds": {
-      "3001": 0.7
+      "3001": 0.7,
+      "3002": 0.6
+    },
+    "cascade_verification": {
+      "3001": {
+        "enabled": true,
+        "verifier_algo_id": "3002",
+        "verifier_class_names": [
+          "pedestrian", 
+          "people",
+          "bicycle",
+          "car",
+          "van",
+          "truck",
+          "tricycle",
+          "awning-tricycle",
+          "bus",
+          "motor"
+        ],
+        "box_expand_ratio": 0.04
+      }
     }
   },
   "streams": [

@@ -35,6 +35,7 @@ from .result_store import ResultStore, AlgorithmResult
 from .algo_worker import AlgoWorker
 from .ppe_worker import PPEWorker
 from .multi_model_pipeline import MultiModelPipeline
+from .cascade_verifier import CascadeVerifier
 
 __all__ = [
     'FrameHub',
@@ -43,4 +44,5 @@ __all__ = [
     'AlgoWorker',
     'PPEWorker',
     'MultiModelPipeline',
+    'CascadeVerifier',
 ]

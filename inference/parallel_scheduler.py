@@ -93,7 +93,21 @@ class ParallelInferenceScheduler:
         # 获取模型推理间隔配置
         model_intervals = getattr(self.config, 'model_intervals', {}) or {}
 
+        # 级联校验配置：{algo_id: {"enabled", "verifier_algo_id", ...}}
+        # 被用作 verifier 的模型（如 3002）只作为二次校验器被调用，
+        # 不作为独立 AlgoWorker 对全图跑检测，跳过其独立注册。
+        cascade_cfg_map = getattr(self.config, 'cascade_verification', {}) or {}
+        verifier_algo_ids = {
+            str(cfg.get('verifier_algo_id'))
+            for cfg in cascade_cfg_map.values()
+            if isinstance(cfg, dict) and cfg.get('enabled') and cfg.get('verifier_algo_id')
+        }
+
         for algo_id in model_ids:
+            if algo_id in verifier_algo_ids:
+                logging.info(f"[ParallelScheduler] 模型 {algo_id} 仅作为级联校验器使用，跳过独立注册")
+                continue
+
             # 获取模型实例
             model = self._engine._models.get(algo_id)
             if model is None:
@@ -108,6 +122,9 @@ class ParallelInferenceScheduler:
             # 获取推理间隔（安全转换，无效值不会让整个 pipeline 崩溃）
             inference_interval = _safe_int_interval(model_intervals.get(algo_id, 1))
 
+            # 构建级联校验器（如果本模型配置了 cascade_verification）
+            cascade_verifier = self._build_cascade_verifier(algo_id, model_configs)
+
             # 添加模型到管线
             self._pipeline.add_model(
                 algo_id=algo_id,
@@ -116,6 +133,7 @@ class ParallelInferenceScheduler:
                 device=device,
                 inference_interval=inference_interval,
                 tracker_config=tracker_config,
+                cascade_verifier=cascade_verifier,
             )
 
             logging.info(f"[ParallelScheduler] 添加模型 {algo_id}, interval={inference_interval}, device={device}")
@@ -124,6 +142,47 @@ class ParallelInferenceScheduler:
         ppe_enabled = bool(getattr(self.config, 'ppe_enabled', False))
         if ppe_enabled:
             self._load_ppe_to_pipeline()
+
+    def _build_cascade_verifier(self, algo_id: str, model_configs: Dict[str, Dict[str, Any]]):
+        """
+        为指定模型构建级联二次校验器（如为 3001 构建用 3002 复核的校验器）。
+
+        Args:
+            algo_id: 需要被校验的模型 ID（如 "3001"）
+            model_configs: InferenceEngine 的模型运行时配置
+
+        Returns:
+            CascadeVerifier 实例，未配置级联校验时返回 None
+        """
+        get_cascade_fn = getattr(self.config, 'get_cascade_verification', None)
+        if get_cascade_fn is None:
+            return None
+        cascade_cfg = get_cascade_fn(algo_id)
+        if not cascade_cfg:
+            return None
+
+        verifier_algo_id = str(cascade_cfg.get('verifier_algo_id', '') or '')
+        verifier_model = self._engine._models.get(verifier_algo_id)
+        if verifier_model is None:
+            logging.warning(
+                f"[ParallelScheduler] 模型 {algo_id} 配置了级联校验，"
+                f"但校验模型 {verifier_algo_id} 未加载，跳过级联校验"
+            )
+            return None
+
+        from pipeline.cascade_verifier import CascadeVerifier
+
+        verifier_model_cfg = model_configs.get(verifier_algo_id, {})
+        return CascadeVerifier(
+            verifier_model=verifier_model,
+            verifier_class_names=set(cascade_cfg.get('verifier_class_names', []) or []),
+            box_expand_ratio=float(cascade_cfg.get('box_expand_ratio', 0.08)),
+            conf_threshold=float(
+                verifier_model_cfg.get('conf_threshold')
+                or (self.config.get_conf_threshold(verifier_algo_id) if hasattr(self.config, 'get_conf_threshold') else 0.25)
+            ),
+            device=verifier_model_cfg.get('device', 'cpu'),
+        )
 
     def _load_ppe_to_pipeline(self) -> None:
         """加载 PPE 检测器到管线。"""

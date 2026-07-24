@@ -237,6 +237,27 @@ class CameraConfig:
         # 查找优先级：model_conf_thresholds[algo_id] → default_conf_threshold
         self.model_conf_thresholds = models.get('model_conf_thresholds', {})
 
+        # 级联二次校验配置：某模型（如 3001 大型机械）误将人/车分类为目标物体时，
+        # 用另一个模型（如 3002 人车模型）对同一检测框区域复核，命中则剔除该检测框。
+        # 格式: {"3001": {"enabled": true, "verifier_algo_id": "3002",
+        #                  "verifier_class_names": [...], "box_expand_ratio": 0.08}}
+        self.cascade_verification = models.get('cascade_verification', {})
+
+    def get_cascade_verification(self, algo_id: str) -> dict:
+        """
+        获取指定模型的级联二次校验配置。
+
+        Args:
+            algo_id: 模型 ID（如 "3001"）
+
+        Returns:
+            级联校验配置字典，未配置或未启用则返回空字典
+        """
+        cfg = getattr(self, 'cascade_verification', {}).get(algo_id, {})
+        if not isinstance(cfg, dict) or not cfg.get('enabled'):
+            return {}
+        return cfg
+
     def _load_class_config(self):
         # 类别过滤已统一到 models.model_class_filters，由 get_class_filter(algo_id) 方法提供。
         # 此方法保留仅为兼容旧代码中直接读取 detection_filtered_class_names 的地方。
